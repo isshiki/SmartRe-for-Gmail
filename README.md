@@ -6,6 +6,8 @@ It keeps Gmail's quote structure intact while making replies cleaner and easier 
 ![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Coming%20soon-lightgrey.svg)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
+[Privacy Policy](PRIVACY.md)
+
 ---
 
 ## ✨ Features
@@ -113,6 +115,7 @@ SmartRe-for-Gmail/
 ├── build.ps1                  # Build scripts
 ├── build.bat
 │
+├── PRIVACY.md
 └── README.md
 ```
 

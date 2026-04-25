@@ -27,3 +27,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Local source images that may contain personal information
+screenshots/*source*.png
+screenshots/*source*.jpg
+screenshots/*source*.jpeg

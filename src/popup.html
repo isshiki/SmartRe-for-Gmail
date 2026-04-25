@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>SmartRe for Gmail</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <header class="header">
+      <img class="app-icon" src="../icons/icon48.png" alt="">
+      <div>
+        <h1 data-i18n="appName">SmartRe for Gmail</h1>
+        <p class="version" data-version></p>
+      </div>
+    </header>
+
+    <section class="settings" aria-labelledby="settingsTitle">
+      <h2 id="settingsTitle" data-i18n="settingsTitle">Settings</h2>
+
+      <label class="switch-row" for="adjustQuoteStyleEnabled">
+        <span>
+          <strong data-i18n="adjustQuoteStyleLabel">Adjust quote style</strong>
+          <small data-i18n="adjustQuoteStyleHelp">Keep blockquotes and remove only the visible left quote bar.</small>
+        </span>
+        <input id="adjustQuoteStyleEnabled" type="checkbox" role="switch">
+      </label>
+
+      <label class="switch-row" for="rewriteHeaderEnabled">
+        <span>
+          <strong data-i18n="rewriteHeaderLabel">Rewrite reply header</strong>
+          <small data-i18n="rewriteHeaderHelp">Convert Gmail's one-line header to an Original message header.</small>
+        </span>
+        <input id="rewriteHeaderEnabled" type="checkbox" role="switch">
+      </label>
+
+      <p class="settings-note" data-i18n="settingsNote">
+        This extension automatically expands quoted content when you reply.
+      </p>
+    </section>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,770 @@
+globalThis.chrome = globalThis.browser ? globalThis.browser : globalThis.chrome;
+
+const api = globalThis.chrome;
+
+const SETTINGS_DEFAULTS = {
+  adjustQuoteStyleEnabled: true,
+  rewriteHeaderEnabled: true
+};
+
+const TIMEOUT_SEC = 5;
+const TRIM_CLICK_DELAY_MS = 700;
+const DEBUG = false;
+const INITIALIZED_FLAG = "__smartreContentScriptInitialized";
+
+const SELECTORS = {
+  // Gmail返信ボタン。英語UI/日本語UI/内部クラスの候補をまとめて監視する。
+  replyButtons: [
+    "div[data-tooltip='Reply']",
+    "div[data-tooltip*='Reply']",
+    "button[aria-label='Reply']",
+    "button[aria-label*='Reply']",
+    "div[aria-label='Reply']",
+    "div[aria-label*='Reply']",
+    "button[aria-label='返信']",
+    "button[aria-label*='返信']",
+    "div[data-tooltip*='返信']",
+    "div[aria-label*='返信']",
+    "span.ams.bkH",
+    "span.ams.bkI"
+  ],
+
+  // Gmail返信下部の操作領域。直近の返信ドラフトを探す補助に使う。
+  draftFooter: "div.gA.gt",
+
+  // Gmailの「...」引用展開ボタン。クリック後に引用DOMが生成される。
+  trimButton: "div.ajR",
+
+  // Gmail返信内の引用ブロック。削除せずスタイルだけ整える。
+  quote: "blockquote.gmail_quote",
+
+  // Gmail返信内の1行ヘッダ。Outlook風の複数行ヘッダへ書き換える。
+  header: "div.gmail_attr",
+
+  // Gmailスレッド画面の件名。
+  subject: "h2.hP",
+
+  // Gmail返信の本文エディタ。プレーンテキストモードでは引用もここに直接入る。
+  messageBody: "div[role='textbox'][contenteditable='true']"
+};
+
+function debugLog(message, data) {
+  if (!DEBUG) return;
+  if (data === undefined) {
+    console.debug(`[SmartRe] ${message}`);
+    return;
+  }
+  console.debug(`[SmartRe] ${message}`, data);
+}
+
+function debugWarn(message, data) {
+  if (!DEBUG) return;
+  if (data === undefined) {
+    console.warn(`[SmartRe] ${message}`);
+    return;
+  }
+  console.warn(`[SmartRe] ${message}`, data);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getLastElement(selector, targetNode = document) {
+  return Array.from(targetNode.querySelectorAll(selector)).pop();
+}
+
+function getFirstElement(selector, targetNode = document) {
+  return targetNode.querySelector(selector);
+}
+
+function waitForElement(selector, timeoutSec, { targetNode = document, last = true } = {}) {
+  return new Promise((resolve) => {
+    const getElement = last ? getLastElement : getFirstElement;
+    const element = getElement(selector, targetNode);
+    if (element) {
+      resolve(element);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      const found = getElement(selector, targetNode);
+      if (!found) return;
+
+      clearTimeout(timeoutId);
+      observer.disconnect();
+      resolve(found);
+    });
+
+    const timeoutId = setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeoutSec * 1000);
+
+    observer.observe(targetNode, { childList: true, subtree: true });
+  });
+}
+
+function getExistingFormatTarget(composeRoot) {
+  const richTextTarget = composeRoot.querySelector(`${SELECTORS.quote}, ${SELECTORS.header}`);
+  if (richTextTarget) {
+    return richTextTarget;
+  }
+
+  return getMessageBodies(composeRoot).find((body) => (
+    !body.querySelector(`${SELECTORS.header}, ${SELECTORS.quote}`) &&
+    findPlainTextReplyHeader(getPlainTextBodyLines(body))
+  )) || null;
+}
+
+function waitForFormatTarget(composeRoot, timeoutSec) {
+  return new Promise((resolve) => {
+    const existingTarget = getExistingFormatTarget(composeRoot);
+    if (existingTarget) {
+      resolve(existingTarget);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      const found = getExistingFormatTarget(composeRoot);
+      if (!found) return;
+
+      clearTimeout(timeoutId);
+      observer.disconnect();
+      resolve(found);
+    });
+
+    const timeoutId = setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeoutSec * 1000);
+
+    observer.observe(composeRoot, { childList: true, characterData: true, subtree: true });
+  });
+}
+
+function clickElement(element) {
+  if (!element) return;
+
+  ["mousedown", "mouseup", "click"].forEach((type) => {
+    element.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    }));
+  });
+}
+
+function storageGet(defaults) {
+  if (!api?.storage?.sync) {
+    return Promise.resolve({ ...defaults });
+  }
+
+  if (globalThis.browser?.storage?.sync) {
+    return api.storage.sync.get(defaults)
+      .then((result) => ({ ...defaults, ...(result || {}) }))
+      .catch(() => ({ ...defaults }));
+  }
+
+  return new Promise((resolve) => {
+    api.storage.sync.get(defaults, (result) => {
+      if (api.runtime?.lastError) {
+        resolve({ ...defaults });
+        return;
+      }
+
+      resolve({ ...defaults, ...(result || {}) });
+    });
+  });
+}
+
+async function loadSettings() {
+  return storageGet(SETTINGS_DEFAULTS);
+}
+
+function sendMessage(message) {
+  if (!api?.runtime?.sendMessage) {
+    return Promise.resolve(null);
+  }
+
+  if (globalThis.browser?.runtime?.sendMessage) {
+    return api.runtime.sendMessage(message).catch(() => null);
+  }
+
+  return new Promise((resolve) => {
+    api.runtime.sendMessage(message, (response) => {
+      if (api.runtime?.lastError) {
+        resolve(null);
+        return;
+      }
+
+      resolve(response || null);
+    });
+  });
+}
+
+async function getProfileEmail() {
+  const response = await sendMessage({ type: "smartre:getProfileUserInfo" });
+  debugLog("Profile email lookup finished.", { hasEmail: Boolean(response?.email) });
+  return response?.email || "";
+}
+
+function parseGoogleAccountName(label, email) {
+  if (!label || !email || !label.includes(email)) {
+    return "";
+  }
+
+  const normalized = label
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const emailIndex = normalized.indexOf(email);
+  if (emailIndex <= 0) {
+    return "";
+  }
+
+  const beforeEmail = normalized
+    .slice(0, emailIndex)
+    .replace(/^(Google Account|Google アカウント)\s*:\s*/i, "")
+    .replace(/^[<（(\[]\s*/, "")
+    .replace(/\(\s*$/, "")
+    .replace(/[>）)\]]\s*$/, "")
+    .replace(/[<（(]\s*$/, "")
+    .trim();
+
+  if (!beforeEmail || beforeEmail.includes("@")) {
+    return "";
+  }
+
+  return beforeEmail;
+}
+
+function getProfileNameFromGmailUi(email) {
+  const accountElements = Array.from(document.querySelectorAll("[aria-label]"))
+    .filter((element) => {
+      const label = element.getAttribute("aria-label") || "";
+      return label.includes("Google Account") || label.includes("Google アカウント");
+    });
+
+  for (const element of accountElements) {
+    const name = parseGoogleAccountName(element.getAttribute("aria-label"), email);
+    if (name) {
+      return name;
+    }
+  }
+
+  return "";
+}
+
+async function getProfileMailbox() {
+  const email = await getProfileEmail();
+  if (!email) {
+    return "";
+  }
+
+  const name = getProfileNameFromGmailUi(email);
+  debugLog("Profile display name lookup finished.", { hasName: Boolean(name) });
+
+  return name ? `${name} <${email}>` : `<${email}>`;
+}
+
+function findComposeRootFromElement(element) {
+  if (!element) return document;
+
+  const scopedCandidates = [
+    element.closest("div[role='dialog']"),
+    element.closest("div.M9"),
+    element.closest("div.AD")
+  ].filter(Boolean);
+
+  const parentChain = [];
+  let current = element;
+  for (let depth = 0; current && current !== document.body && depth < 8; depth += 1) {
+    parentChain.push(current);
+    current = current.parentElement;
+  }
+
+  const candidates = [...scopedCandidates, ...parentChain];
+
+  return candidates.find((node) => (
+    node.querySelector(SELECTORS.trimButton) ||
+    node.querySelector(SELECTORS.header) ||
+    node.querySelector(SELECTORS.quote) ||
+    node.matches?.(SELECTORS.messageBody) ||
+    node.querySelector(SELECTORS.messageBody)
+  )) || scopedCandidates[0] || parentChain[parentChain.length - 1] || document;
+}
+
+async function findActiveComposeRoot(anchorElement) {
+  if (anchorElement) {
+    return findComposeRootFromElement(anchorElement);
+  }
+
+  const footer = await waitForElement(SELECTORS.draftFooter, TIMEOUT_SEC, { last: true });
+  debugLog("Draft footer lookup finished.", { found: Boolean(footer) });
+  return findComposeRootFromElement(footer);
+}
+
+async function formatReplyDraft() {
+  const settings = await loadSettings();
+  debugLog("Formatting requested.", { settings });
+
+  if (!settings.adjustQuoteStyleEnabled && !settings.rewriteHeaderEnabled) {
+    debugLog("Both formatting features are disabled. Skipping.");
+    return;
+  }
+
+  const draftTarget = await waitForElement(
+    `${SELECTORS.trimButton}, ${SELECTORS.messageBody}, ${SELECTORS.draftFooter}`,
+    TIMEOUT_SEC,
+    { last: true }
+  );
+  let trimButton = getLastElement(SELECTORS.trimButton);
+  if (!trimButton) {
+    trimButton = await waitForElement(SELECTORS.trimButton, 1, { last: true });
+  }
+
+  debugLog("Quote expansion button lookup finished.", {
+    found: Boolean(trimButton),
+    allTrimButtons: document.querySelectorAll(SELECTORS.trimButton).length,
+    hasDraftTarget: Boolean(draftTarget)
+  });
+
+  const composeRoot = await findActiveComposeRoot(trimButton || draftTarget);
+  if (!composeRoot) {
+    debugWarn("Compose root was not found.");
+    return;
+  }
+
+  debugLog("Compose root selected.", {
+    tagName: composeRoot.tagName,
+    className: composeRoot.className || "",
+    id: composeRoot.id || ""
+  });
+
+  if (trimButton) {
+    await sleep(TRIM_CLICK_DELAY_MS);
+    debugLog("Clicking quote expansion button.", {
+      className: trimButton.className || "",
+      ariaLabel: trimButton.getAttribute("aria-label") || "",
+      tooltip: trimButton.getAttribute("data-tooltip") || ""
+    });
+    clickElement(trimButton);
+  } else {
+    debugWarn("Quote expansion button was not found.");
+  }
+
+  const generatedElement = await waitForFormatTarget(composeRoot, TIMEOUT_SEC);
+
+  debugLog("Quote/header DOM lookup finished.", {
+    found: Boolean(generatedElement),
+    quoteCount: composeRoot.querySelectorAll(SELECTORS.quote).length,
+    headerCount: composeRoot.querySelectorAll(SELECTORS.header).length,
+    bodyCount: composeRoot.querySelectorAll(SELECTORS.messageBody).length
+  });
+
+  await formatComposeRoot(composeRoot, settings);
+}
+
+async function formatComposeRoot(composeRoot, settings) {
+  if (settings.adjustQuoteStyleEnabled) {
+    adjustQuoteStyles(composeRoot);
+  }
+
+  if (settings.rewriteHeaderEnabled) {
+    const subject = getSubjectText();
+    const toAddress = await getProfileMailbox();
+    rewriteGmailHeaders(composeRoot, { subject, toAddress });
+    formatPlainTextBodies(composeRoot, settings, { subject, toAddress });
+    return;
+  }
+
+  formatPlainTextBodies(composeRoot, settings, { subject: "", toAddress: "" });
+}
+
+function adjustQuoteStyles(composeRoot) {
+  const quotes = composeRoot.querySelectorAll(SELECTORS.quote);
+  debugLog("Adjusting quote styles.", { count: quotes.length });
+
+  quotes.forEach((quote) => {
+    quote.style.borderLeft = "none";
+    quote.style.marginLeft = "0";
+    quote.style.paddingLeft = "0";
+    quote.dataset.smartreProcessed = "true";
+  });
+}
+
+function getSubjectText() {
+  return document.querySelector(SELECTORS.subject)?.textContent?.trim() || "";
+}
+
+function normalizeHeaderText(text) {
+  return (text || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\s*:\s*$/, "");
+}
+
+function isAlreadyFormattedHeaderText(text) {
+  return /Original message|Forwarded message/i.test(normalizeHeaderText(text));
+}
+
+function parseGmailHeader(headerText) {
+  const text = normalizeHeaderText(headerText)
+    .replace(/^On\s+/i, "")
+    .replace(/\s*wrote\s*$/i, "");
+
+  if (!text || /Original message|Forwarded message/i.test(text)) {
+    return null;
+  }
+
+  const angleEmailMatch = text.match(/<([^<>@\s]+@[^<>\s]+)>/);
+  const plainEmailMatch = angleEmailMatch ? null : text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const emailMatch = angleEmailMatch || plainEmailMatch;
+  const email = angleEmailMatch ? angleEmailMatch[1] : (plainEmailMatch ? plainEmailMatch[0] : "");
+  const beforeEmail = emailMatch ? text.slice(0, emailMatch.index).trim() : text;
+
+  let date = "";
+  let senderName = "";
+
+  const dateAndName = beforeEmail.match(/^(.+\d{1,2}:\d{2}(?:\s*(?:AM|PM))?)\s+(.+)$/i);
+  if (dateAndName) {
+    date = dateAndName[1].trim();
+    senderName = dateAndName[2].trim();
+  } else if (email) {
+    senderName = beforeEmail.trim();
+  }
+
+  if (!date && !senderName && !email) {
+    return null;
+  }
+
+  return { date, senderName, email };
+}
+
+function appendText(parent, text) {
+  parent.appendChild(document.createTextNode(text));
+}
+
+function appendBr(parent) {
+  parent.appendChild(document.createElement("br"));
+}
+
+function appendHeaderLine(parent, label, value) {
+  if (!value) return;
+
+  appendText(parent, `${label}: ${value}`);
+  appendBr(parent);
+}
+
+function isBlankTextNode(node) {
+  return node?.nodeType === Node.TEXT_NODE && node.textContent.trim() === "";
+}
+
+function isBrElement(node) {
+  return node?.nodeType === Node.ELEMENT_NODE && node.tagName === "BR";
+}
+
+function ensureSpacingAfterHeader(header) {
+  const parent = header.parentNode;
+  if (!parent) return;
+
+  let referenceNode = header.nextSibling;
+  let existingBreaks = 0;
+
+  while (referenceNode && (isBlankTextNode(referenceNode) || isBrElement(referenceNode))) {
+    if (isBrElement(referenceNode)) {
+      existingBreaks += 1;
+    }
+
+    referenceNode = referenceNode.nextSibling;
+  }
+
+  for (let i = existingBreaks; i < 2; i += 1) {
+    parent.insertBefore(document.createElement("br"), referenceNode);
+  }
+}
+
+function appendFromLine(parent, parsed) {
+  if (!parsed.senderName && !parsed.email) return;
+
+  appendText(parent, "From: ");
+
+  if (parsed.senderName) {
+    const strong = document.createElement("strong");
+    strong.className = "gmail_sendername";
+    strong.dir = "auto";
+    strong.textContent = parsed.senderName;
+    parent.appendChild(strong);
+  }
+
+  if (parsed.email) {
+    if (parsed.senderName) appendText(parent, " ");
+
+    const span = document.createElement("span");
+    span.dir = "auto";
+    span.textContent = `<${parsed.email}>`;
+    parent.appendChild(span);
+  }
+
+  appendBr(parent);
+}
+
+function rewriteHeaderElement(header, parsed, { subject, toAddress }) {
+  header.replaceChildren();
+  header.dir = "ltr";
+
+  appendText(header, "---------- Original message ---------");
+  appendBr(header);
+
+  appendFromLine(header, parsed);
+  appendHeaderLine(header, "Date", parsed.date);
+  appendHeaderLine(header, "Subject", subject);
+  appendHeaderLine(header, "To", toAddress);
+
+  header.dataset.smartreProcessed = "true";
+  ensureSpacingAfterHeader(header);
+}
+
+function rewriteGmailHeaders(composeRoot, context) {
+  const headers = composeRoot.querySelectorAll(SELECTORS.header);
+  debugLog("Rewriting Gmail headers.", {
+    count: headers.length,
+    hasSubject: Boolean(context.subject),
+    hasToAddress: Boolean(context.toAddress)
+  });
+
+  headers.forEach((header) => {
+    if (header.dataset.smartreProcessed === "true") {
+      ensureSpacingAfterHeader(header);
+      return;
+    }
+
+    if (isAlreadyFormattedHeaderText(header.textContent)) {
+      header.dataset.smartreProcessed = "true";
+      ensureSpacingAfterHeader(header);
+      debugLog("Header is already formatted. Skipping rewrite.");
+      return;
+    }
+
+    const parsed = parseGmailHeader(header.textContent);
+    if (!parsed) {
+      debugWarn("Header text could not be parsed.", { text: header.textContent });
+      return;
+    }
+
+    debugLog("Header parsed.", parsed);
+    rewriteHeaderElement(header, parsed, context);
+  });
+}
+
+function getPlainTextBodyLines(body) {
+  return (body.innerText || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n");
+}
+
+function findPlainTextReplyHeader(lines) {
+  const maxHeaderSearchLines = Math.min(lines.length, 20);
+
+  for (let index = 0; index < maxHeaderSearchLines; index += 1) {
+    const line = lines[index].trim();
+    if (!line || line.startsWith(">")) continue;
+
+    const parsed = parseGmailHeader(line);
+    if (parsed) {
+      return { index, parsed };
+    }
+  }
+
+  return null;
+}
+
+function stripPlainTextQuotePrefix(line) {
+  return line.replace(/^>\s?/, "");
+}
+
+function dropLeadingBlankLines(lines) {
+  let firstContentIndex = 0;
+  while (firstContentIndex < lines.length && !lines[firstContentIndex].trim()) {
+    firstContentIndex += 1;
+  }
+
+  return lines.slice(firstContentIndex);
+}
+
+function formatPlainTextMailbox(name, email) {
+  if (name && email) return `${name} <${email}>`;
+  if (email) return `<${email}>`;
+  return name || "";
+}
+
+function buildPlainTextHeaderLines(parsed, { subject, toAddress }) {
+  const lines = ["---------- Original message ---------"];
+  const from = formatPlainTextMailbox(parsed.senderName, parsed.email);
+
+  if (from) lines.push(`From: ${from}`);
+  if (parsed.date) lines.push(`Date: ${parsed.date}`);
+  if (subject) lines.push(`Subject: ${subject}`);
+  if (toAddress) lines.push(`To: ${toAddress}`);
+
+  return lines;
+}
+
+function replacePlainTextBodyLines(body, lines) {
+  body.replaceChildren();
+
+  lines.forEach((line, index) => {
+    if (line) {
+      body.appendChild(document.createTextNode(line));
+    }
+
+    if (index < lines.length - 1) {
+      appendBr(body);
+    }
+  });
+
+  body.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function getMessageBodies(composeRoot) {
+  const bodies = Array.from(composeRoot.querySelectorAll(SELECTORS.messageBody));
+
+  if (composeRoot instanceof Element && composeRoot.matches(SELECTORS.messageBody)) {
+    bodies.unshift(composeRoot);
+  }
+
+  return bodies;
+}
+
+function formatPlainTextBody(body, settings, context) {
+  if (body.dataset.smartrePlainTextProcessed === "true") {
+    return false;
+  }
+
+  if (body.querySelector(`${SELECTORS.header}, ${SELECTORS.quote}`)) {
+    return false;
+  }
+
+  const lines = getPlainTextBodyLines(body);
+  const header = findPlainTextReplyHeader(lines);
+  if (!header) {
+    return false;
+  }
+
+  const beforeHeader = lines.slice(0, header.index);
+  const quoteLines = lines.slice(header.index + 1);
+  const formattedQuoteLines = settings.adjustQuoteStyleEnabled
+    ? quoteLines.map(stripPlainTextQuotePrefix)
+    : quoteLines;
+
+  let nextLines = null;
+
+  if (settings.rewriteHeaderEnabled) {
+    nextLines = [
+      ...beforeHeader,
+      ...buildPlainTextHeaderLines(header.parsed, context),
+      "",
+      "",
+      ...dropLeadingBlankLines(formattedQuoteLines)
+    ];
+  } else if (settings.adjustQuoteStyleEnabled) {
+    nextLines = [
+      ...beforeHeader,
+      lines[header.index],
+      ...formattedQuoteLines
+    ];
+  }
+
+  if (!nextLines || nextLines.join("\n") === lines.join("\n")) {
+    return false;
+  }
+
+  replacePlainTextBodyLines(body, nextLines);
+  body.dataset.smartrePlainTextProcessed = "true";
+  return true;
+}
+
+function formatPlainTextBodies(composeRoot, settings, context) {
+  const bodies = getMessageBodies(composeRoot);
+  let formattedCount = 0;
+
+  bodies.forEach((body) => {
+    if (formatPlainTextBody(body, settings, context)) {
+      formattedCount += 1;
+    }
+  });
+
+  debugLog("Formatting plain text bodies finished.", {
+    bodyCount: bodies.length,
+    formattedCount
+  });
+}
+
+function matchesAnySelector(element, selectors) {
+  if (!(element instanceof Element)) return null;
+
+  for (const selector of selectors) {
+    const matched = element.closest(selector);
+    if (matched) return { selector, element: matched };
+  }
+
+  return null;
+}
+
+function describeClickTarget(target) {
+  if (!(target instanceof Element)) return {};
+
+  const closestButton = target.closest("[role='button'], button[data-tooltip], button[aria-label], div[data-tooltip], div[aria-label], span.ams");
+
+  return {
+    tagName: target.tagName,
+    className: target.className || "",
+    text: (target.textContent || "").trim().slice(0, 80),
+    closestTagName: closestButton?.tagName || "",
+    closestClassName: closestButton?.className || "",
+    closestAriaLabel: closestButton?.getAttribute("aria-label") || "",
+    closestTooltip: closestButton?.getAttribute("data-tooltip") || ""
+  };
+}
+
+function handleDocumentClick(event) {
+  const matchedReply = matchesAnySelector(event.target, SELECTORS.replyButtons);
+  if (!matchedReply) {
+    return;
+  }
+
+  debugLog("Reply click detected.", {
+    selector: matchedReply.selector,
+    target: describeClickTarget(event.target)
+  });
+
+  window.setTimeout(() => {
+    formatReplyDraft().catch((error) => {
+      debugWarn("Formatting failed.", error);
+    });
+  }, 0);
+}
+
+function main() {
+  if (globalThis[INITIALIZED_FLAG]) {
+    debugLog("Content script already initialized in this context. Skipping listener registration.");
+    return;
+  }
+
+  globalThis[INITIALIZED_FLAG] = true;
+
+  debugLog("Content script initialized.", {
+    href: location.href,
+    selectors: SELECTORS.replyButtons
+  });
+
+  document.removeEventListener("click", handleDocumentClick, true);
+  document.addEventListener("click", handleDocumentClick, true);
+}
+
+window.addEventListener("hashchange", main);
+main();

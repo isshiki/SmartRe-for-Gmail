@@ -1,0 +1,35 @@
+{
+  "appName": {
+    "message": "SmartRe for Gmail™"
+  },
+  "appShortName": {
+    "message": "SmartRe"
+  },
+  "appDescription": {
+    "message": "Formats quoted reply text and original-message headers in Gmail replies."
+  },
+  "settingsTitle": {
+    "message": "Settings"
+  },
+  "adjustQuoteStyleLabel": {
+    "message": "Adjust quote style"
+  },
+  "adjustQuoteStyleHelp": {
+    "message": "Removes the left quote line or leading quote marks from quoted text in replies."
+  },
+  "rewriteHeaderLabel": {
+    "message": "Rewrite reply header"
+  },
+  "rewriteHeaderHelp": {
+    "message": "Formats the sender, date, subject, and To line in an Outlook-style header."
+  },
+  "settingsNote": {
+    "message": "This extension automatically expands quoted content when you reply."
+  },
+  "settingsSaved": {
+    "message": "Saved."
+  },
+  "settingsSaveFailed": {
+    "message": "Could not save settings."
+  }
+}

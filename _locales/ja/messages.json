@@ -1,0 +1,35 @@
+{
+  "appName": {
+    "message": "SmartRe for Gmail™"
+  },
+  "appShortName": {
+    "message": "SmartRe"
+  },
+  "appDescription": {
+    "message": "Gmailの返信で引用部分と元メールヘッダを整形します。"
+  },
+  "settingsTitle": {
+    "message": "設定"
+  },
+  "adjustQuoteStyleLabel": {
+    "message": "引用スタイルを調整"
+  },
+  "adjustQuoteStyleHelp": {
+    "message": "返信の引用部分から、左側の線や行頭の引用記号をなくします。"
+  },
+  "rewriteHeaderLabel": {
+    "message": "返信ヘッダを書き換え"
+  },
+  "rewriteHeaderHelp": {
+    "message": "差出人、日時、件名、宛先をOutlookのような形式で読みやすく整えます。"
+  },
+  "settingsNote": {
+    "message": "この拡張機能は、返信時に引用部分を自動的に開きます。"
+  },
+  "settingsSaved": {
+    "message": "保存しました。"
+  },
+  "settingsSaveFailed": {
+    "message": "設定を保存できませんでした。"
+  }
+}

@@ -28,6 +28,9 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Local scratch files and directories whose names start with @
+@*
+
 # Local source images that may contain personal information
 screenshots/*source*.png
 screenshots/*source*.jpg

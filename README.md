@@ -3,7 +3,7 @@
 SmartRe for Gmail™ is a Chrome extension that formats quoted reply content and original-message headers in Gmail reply drafts.
 It keeps Gmail's quote structure intact while making replies cleaner and easier to read.
 
-![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Coming%20soon-lightgrey.svg)
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Available-0F766E.svg)](https://chromewebstore.google.com/detail/smartre-for-gmail/didekpjkeflkjeffikpphaccodoaohid)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
 [Privacy Policy](PRIVACY.md)
@@ -68,7 +68,9 @@ SmartRe itself does not send message contents or account information to external
 
 ### From Chrome Web Store
 
-SmartRe for Gmail is not published yet.
+Install SmartRe for Gmail from the Chrome Web Store:
+
+https://chromewebstore.google.com/detail/smartre-for-gmail/didekpjkeflkjeffikpphaccodoaohid
 
 ### Manual (Development)
 
@@ -186,5 +188,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## 💬 Feedback
 
+* Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/smartre-for-gmail/didekpjkeflkjeffikpphaccodoaohid)
 * Report bugs or suggestions via [GitHub Issues](https://github.com/isshiki/SmartRe-for-Gmail/issues)
 * Pull requests are welcome

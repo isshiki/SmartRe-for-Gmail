@@ -206,6 +206,7 @@ textarea:disabled,
   color: var(--muted);
   font-size: 12px;
   margin-top: 8px;
+  padding-left: 12px;
 }
 
 input[role="switch"] {

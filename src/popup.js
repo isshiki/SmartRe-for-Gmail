@@ -47,25 +47,6 @@ function loadSettings() {
   });
 }
 
-function normalizeSettings(settings) {
-  const normalized = { ...DEFAULT_SETTINGS, ...(settings || {}) };
-
-  if (normalized.removeQuoteEnabled) {
-    normalized.adjustQuoteStyleEnabled = false;
-    normalized.rewriteHeaderEnabled = false;
-  }
-
-  return normalized;
-}
-
-function collectSettingsFromInputs() {
-  return SETTING_IDS.reduce((settings, id) => {
-    const input = $(`#${id}`);
-    settings[id] = Boolean(input?.checked);
-    return settings;
-  }, {});
-}
-
 function saveSettings(settings) {
   return new Promise((resolve) => {
     chrome.storage.sync.set(settings, () => {
@@ -113,25 +94,21 @@ async function init() {
   applyI18n();
   applyVersion();
 
-  const settings = normalizeSettings(await loadSettings());
+  let settings = await loadSettings();
   renderSettings(settings);
-
-  if (settings.removeQuoteEnabled) {
-    await saveSettings(settings);
-  }
 
   SETTING_IDS.forEach((id) => {
     const input = $(`#${id}`);
     if (!input) return;
 
     input.addEventListener("change", async () => {
-      const nextSettings = normalizeSettings({
-        ...collectSettingsFromInputs(),
+      settings = {
+        ...settings,
         [id]: input.checked
-      });
-      const saved = await saveSettings(nextSettings);
+      };
+      const saved = await saveSettings({ [id]: input.checked });
 
-      renderSettings(nextSettings);
+      renderSettings(settings);
       setStatus(saved ? "settingsSaved" : "settingsSaveFailed", saved);
     });
   });

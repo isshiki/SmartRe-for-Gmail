@@ -183,19 +183,7 @@ function storageGet(defaults) {
 }
 
 async function loadSettings() {
-  const settings = await storageGet(SETTINGS_DEFAULTS);
-  return getEffectiveSettings(settings);
-}
-
-function getEffectiveSettings(settings) {
-  const effective = { ...SETTINGS_DEFAULTS, ...(settings || {}) };
-
-  if (effective.removeQuoteEnabled) {
-    effective.adjustQuoteStyleEnabled = false;
-    effective.rewriteHeaderEnabled = false;
-  }
-
-  return effective;
+  return storageGet(SETTINGS_DEFAULTS);
 }
 
 function sendMessage(message) {

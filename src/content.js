@@ -3,6 +3,7 @@ globalThis.chrome = globalThis.browser ? globalThis.browser : globalThis.chrome;
 const api = globalThis.chrome;
 
 const SETTINGS_DEFAULTS = {
+  removeQuoteEnabled: false,
   adjustQuoteStyleEnabled: true,
   rewriteHeaderEnabled: true
 };
@@ -37,6 +38,9 @@ const SELECTORS = {
 
   // Gmail返信内の引用ブロック。削除せずスタイルだけ整える。
   quote: "blockquote.gmail_quote",
+
+  // Gmail返信内の引用コンテナ。引用削除モードではこの最小単位を優先して削除する。
+  quoteContainer: "div.gmail_quote.gmail_quote_container",
 
   // Gmail返信内の1行ヘッダ。Outlook風の複数行ヘッダへ書き換える。
   header: "div.gmail_attr",
@@ -106,13 +110,13 @@ function waitForElement(selector, timeoutSec, { targetNode = document, last = tr
 }
 
 function getExistingFormatTarget(composeRoot) {
-  const richTextTarget = composeRoot.querySelector(`${SELECTORS.quote}, ${SELECTORS.header}`);
+  const richTextTarget = composeRoot.querySelector(`${SELECTORS.quoteContainer}, ${SELECTORS.quote}, ${SELECTORS.header}`);
   if (richTextTarget) {
     return richTextTarget;
   }
 
   return getMessageBodies(composeRoot).find((body) => (
-    !body.querySelector(`${SELECTORS.header}, ${SELECTORS.quote}`) &&
+    !body.querySelector(`${SELECTORS.quoteContainer}, ${SELECTORS.header}, ${SELECTORS.quote}`) &&
     findPlainTextReplyHeader(getPlainTextBodyLines(body))
   )) || null;
 }
@@ -179,7 +183,19 @@ function storageGet(defaults) {
 }
 
 async function loadSettings() {
-  return storageGet(SETTINGS_DEFAULTS);
+  const settings = await storageGet(SETTINGS_DEFAULTS);
+  return getEffectiveSettings(settings);
+}
+
+function getEffectiveSettings(settings) {
+  const effective = { ...SETTINGS_DEFAULTS, ...(settings || {}) };
+
+  if (effective.removeQuoteEnabled) {
+    effective.adjustQuoteStyleEnabled = false;
+    effective.rewriteHeaderEnabled = false;
+  }
+
+  return effective;
 }
 
 function sendMessage(message) {
@@ -289,6 +305,7 @@ function findComposeRootFromElement(element) {
 
   return candidates.find((node) => (
     node.querySelector(SELECTORS.trimButton) ||
+    node.querySelector(SELECTORS.quoteContainer) ||
     node.querySelector(SELECTORS.header) ||
     node.querySelector(SELECTORS.quote) ||
     node.matches?.(SELECTORS.messageBody) ||
@@ -310,8 +327,8 @@ async function formatReplyDraft() {
   const settings = await loadSettings();
   debugLog("Formatting requested.", { settings });
 
-  if (!settings.adjustQuoteStyleEnabled && !settings.rewriteHeaderEnabled) {
-    debugLog("Both formatting features are disabled. Skipping.");
+  if (!settings.removeQuoteEnabled && !settings.adjustQuoteStyleEnabled && !settings.rewriteHeaderEnabled) {
+    debugLog("All formatting features are disabled. Skipping.");
     return;
   }
 
@@ -359,6 +376,7 @@ async function formatReplyDraft() {
 
   debugLog("Quote/header DOM lookup finished.", {
     found: Boolean(generatedElement),
+    quoteContainerCount: composeRoot.querySelectorAll(SELECTORS.quoteContainer).length,
     quoteCount: composeRoot.querySelectorAll(SELECTORS.quote).length,
     headerCount: composeRoot.querySelectorAll(SELECTORS.header).length,
     bodyCount: composeRoot.querySelectorAll(SELECTORS.messageBody).length
@@ -368,6 +386,11 @@ async function formatReplyDraft() {
 }
 
 async function formatComposeRoot(composeRoot, settings) {
+  if (settings.removeQuoteEnabled) {
+    removeQuotedContent(composeRoot);
+    return;
+  }
+
   if (settings.adjustQuoteStyleEnabled) {
     adjustQuoteStyles(composeRoot);
   }
@@ -381,6 +404,131 @@ async function formatComposeRoot(composeRoot, settings) {
   }
 
   formatPlainTextBodies(composeRoot, settings, { subject: "", toAddress: "" });
+}
+
+function getElementsIncludingRoot(root, selector) {
+  const elements = Array.from(root.querySelectorAll(selector));
+
+  if (root instanceof Element && root.matches(selector)) {
+    elements.unshift(root);
+  }
+
+  return elements;
+}
+
+function dispatchComposeInput(composeRoot) {
+  const body = getMessageBodies(composeRoot)[0];
+  const target = body || (composeRoot instanceof Element ? composeRoot : null);
+
+  if (target) {
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+function removeRichTextQuoteContainers(composeRoot) {
+  const containers = getElementsIncludingRoot(composeRoot, SELECTORS.quoteContainer)
+    .filter((container, index, list) => (
+      list.findIndex((other) => other !== container && other.contains(container)) === -1 &&
+      list.indexOf(container) === index
+    ));
+
+  containers.forEach((container) => {
+    container.remove();
+  });
+
+  return containers.length;
+}
+
+function findPreviousHeaderForQuote(quote) {
+  let node = quote.previousSibling;
+
+  while (node && (isBlankTextNode(node) || isBrElement(node))) {
+    node = node.previousSibling;
+  }
+
+  return node instanceof Element && node.matches(SELECTORS.header) ? node : null;
+}
+
+function removeLooseRichTextQuotes(composeRoot) {
+  const quotes = getElementsIncludingRoot(composeRoot, SELECTORS.quote)
+    .filter((quote) => !quote.closest(SELECTORS.quoteContainer));
+  let removedCount = 0;
+
+  quotes.forEach((quote) => {
+    const header = findPreviousHeaderForQuote(quote) ||
+      quote.parentElement?.querySelector(SELECTORS.header);
+
+    if (header) {
+      header.remove();
+      removedCount += 1;
+    }
+
+    quote.remove();
+    removedCount += 1;
+  });
+
+  return removedCount;
+}
+
+function trimTrailingBlankLines(lines) {
+  let endIndex = lines.length;
+
+  while (endIndex > 0 && !lines[endIndex - 1].trim()) {
+    endIndex -= 1;
+  }
+
+  return lines.slice(0, endIndex);
+}
+
+function removePlainTextQuotedContent(composeRoot) {
+  const bodies = getMessageBodies(composeRoot);
+  let removedCount = 0;
+
+  bodies.forEach((body) => {
+    if (body.dataset.smartreQuoteRemoved === "true") {
+      return;
+    }
+
+    if (body.querySelector(`${SELECTORS.quoteContainer}, ${SELECTORS.header}, ${SELECTORS.quote}`)) {
+      return;
+    }
+
+    const lines = getPlainTextBodyLines(body);
+    const header = findPlainTextReplyHeader(lines);
+    if (!header) {
+      return;
+    }
+
+    const nextLines = trimTrailingBlankLines(lines.slice(0, header.index));
+
+    replacePlainTextBodyLines(body, nextLines);
+    body.dataset.smartreQuoteRemoved = "true";
+    removedCount += 1;
+  });
+
+  return removedCount;
+}
+
+function removeQuotedContent(composeRoot) {
+  const containerCount = removeRichTextQuoteContainers(composeRoot);
+  const loosePartCount = containerCount > 0 ? 0 : removeLooseRichTextQuotes(composeRoot);
+  const plainTextCount = containerCount > 0 || loosePartCount > 0
+    ? 0
+    : removePlainTextQuotedContent(composeRoot);
+
+  if (containerCount > 0 || loosePartCount > 0) {
+    dispatchComposeInput(composeRoot);
+  }
+
+  if (composeRoot instanceof Element && (containerCount > 0 || loosePartCount > 0 || plainTextCount > 0)) {
+    composeRoot.dataset.smartreQuoteRemoved = "true";
+  }
+
+  debugLog("Removing quoted content finished.", {
+    containerCount,
+    loosePartCount,
+    plainTextCount
+  });
 }
 
 function adjustQuoteStyles(composeRoot) {
@@ -617,6 +765,12 @@ function buildPlainTextHeaderLines(parsed, { subject, toAddress }) {
 function replacePlainTextBodyLines(body, lines) {
   body.replaceChildren();
 
+  if (lines.length === 0) {
+    appendBr(body);
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
+
   lines.forEach((line, index) => {
     if (line) {
       body.appendChild(document.createTextNode(line));
@@ -645,7 +799,7 @@ function formatPlainTextBody(body, settings, context) {
     return false;
   }
 
-  if (body.querySelector(`${SELECTORS.header}, ${SELECTORS.quote}`)) {
+  if (body.querySelector(`${SELECTORS.quoteContainer}, ${SELECTORS.header}, ${SELECTORS.quote}`)) {
     return false;
   }
 

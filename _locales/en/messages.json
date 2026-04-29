@@ -6,10 +6,16 @@
     "message": "SmartRe"
   },
   "appDescription": {
-    "message": "Formats quoted reply text and original-message headers in Gmail replies."
+    "message": "Formats or removes quoted reply text and original-message headers in Gmail replies."
   },
   "settingsTitle": {
     "message": "Settings"
+  },
+  "removeQuoteLabel": {
+    "message": "Remove quoted content"
+  },
+  "removeQuoteHelp": {
+    "message": "Deletes the quoted original message from replies."
   },
   "adjustQuoteStyleLabel": {
     "message": "Adjust quote style"

@@ -6,10 +6,16 @@
     "message": "SmartRe"
   },
   "appDescription": {
-    "message": "Gmailの返信で引用部分と元メールヘッダを整形します。"
+    "message": "Gmailの返信で引用部分と元メールヘッダを整形します。引用部分の削除にも対応します。"
   },
   "settingsTitle": {
     "message": "設定"
+  },
+  "removeQuoteLabel": {
+    "message": "引用部分を削除"
+  },
+  "removeQuoteHelp": {
+    "message": "返信時に元メールの引用部分を削除します。"
   },
   "adjustQuoteStyleLabel": {
     "message": "引用スタイルを調整"

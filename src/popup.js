@@ -1,11 +1,13 @@
 "use strict";
 
 const DEFAULT_SETTINGS = {
+  removeQuoteEnabled: false,
   adjustQuoteStyleEnabled: true,
   rewriteHeaderEnabled: true
 };
 
 const SETTING_IDS = Object.keys(DEFAULT_SETTINGS);
+const QUOTE_REMOVAL_DEPENDENTS = ["adjustQuoteStyleEnabled", "rewriteHeaderEnabled"];
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -45,11 +47,51 @@ function loadSettings() {
   });
 }
 
-function saveSetting(key, value) {
+function normalizeSettings(settings) {
+  const normalized = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+
+  if (normalized.removeQuoteEnabled) {
+    normalized.adjustQuoteStyleEnabled = false;
+    normalized.rewriteHeaderEnabled = false;
+  }
+
+  return normalized;
+}
+
+function collectSettingsFromInputs() {
+  return SETTING_IDS.reduce((settings, id) => {
+    const input = $(`#${id}`);
+    settings[id] = Boolean(input?.checked);
+    return settings;
+  }, {});
+}
+
+function saveSettings(settings) {
   return new Promise((resolve) => {
-    chrome.storage.sync.set({ [key]: value }, () => {
+    chrome.storage.sync.set(settings, () => {
       resolve(!chrome.runtime.lastError);
     });
+  });
+}
+
+function renderSettings(settings) {
+  SETTING_IDS.forEach((id) => {
+    const input = $(`#${id}`);
+    if (!input) return;
+
+    input.checked = Boolean(settings[id]);
+  });
+
+  const quoteRemovalEnabled = Boolean(settings.removeQuoteEnabled);
+
+  QUOTE_REMOVAL_DEPENDENTS.forEach((id) => {
+    const input = $(`#${id}`);
+    if (!input) return;
+
+    const row = input.closest(".switch-row");
+    input.disabled = quoteRemovalEnabled;
+    row?.classList.toggle("is-disabled", quoteRemovalEnabled);
+    row?.setAttribute("aria-disabled", quoteRemovalEnabled ? "true" : "false");
   });
 }
 
@@ -71,15 +113,25 @@ async function init() {
   applyI18n();
   applyVersion();
 
-  const settings = await loadSettings();
+  const settings = normalizeSettings(await loadSettings());
+  renderSettings(settings);
+
+  if (settings.removeQuoteEnabled) {
+    await saveSettings(settings);
+  }
 
   SETTING_IDS.forEach((id) => {
     const input = $(`#${id}`);
     if (!input) return;
 
-    input.checked = Boolean(settings[id]);
     input.addEventListener("change", async () => {
-      const saved = await saveSetting(id, input.checked);
+      const nextSettings = normalizeSettings({
+        ...collectSettingsFromInputs(),
+        [id]: input.checked
+      });
+      const saved = await saveSettings(nextSettings);
+
+      renderSettings(nextSettings);
       setStatus(saved ? "settingsSaved" : "settingsSaveFailed", saved);
     });
   });

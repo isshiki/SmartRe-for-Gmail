@@ -1,7 +1,7 @@
 # SmartRe for Gmail™
 
-SmartRe for Gmail™ is a Chrome extension that formats quoted reply content and original-message headers in Gmail reply drafts.
-It keeps Gmail's quote structure intact while making replies cleaner and easier to read.
+SmartRe for Gmail™ is a Chrome extension that formats or removes quoted reply content and original-message headers in Gmail reply drafts.
+It helps keep Gmail replies cleaner and easier to read.
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Available-0F766E.svg)](https://chromewebstore.google.com/detail/smartre-for-gmail/didekpjkeflkjeffikpphaccodoaohid)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -15,10 +15,11 @@ It keeps Gmail's quote structure intact while making replies cleaner and easier 
 ### ✉️ Reply Formatting
 
 * Automatically opens Gmail's hidden quoted content when you reply
-* Keeps Gmail's `blockquote.gmail_quote` elements in place in rich text mode
+* Keeps Gmail's `blockquote.gmail_quote` elements in place when quote style adjustment is enabled
 * Removes only the visible left quote bar and left spacing in rich text mode
 * Removes leading `>` quote markers in Gmail plain text reply mode
-* Preserves rich text quote structure so receiving mail clients can still recognize quoted content
+* Preserves rich text quote structure in formatting mode so receiving mail clients can still recognize quoted content
+* Optionally removes the quoted original message from reply drafts
 
 ### 🧾 Original Message Header
 
@@ -31,8 +32,10 @@ It keeps Gmail's quote structure intact while making replies cleaner and easier 
 
 ### ⚙️ Settings
 
+* Enable quote removal mode
 * Enable or disable quote style adjustment
 * Enable or disable reply header rewriting
+* Quote removal mode automatically disables quote style adjustment and reply header rewriting
 * Preferences are saved with Chrome Storage Sync
 * Popup UI supports English and Japanese through Chrome i18n
 
@@ -88,6 +91,7 @@ After changing source files, reload the extension on `chrome://extensions`, then
 
 | Version | Date       | Notes |
 | ------- | ---------- | ----- |
+| 1.1.0   | 2026-04-29 | Added quote removal mode for Gmail replies |
 | 1.0.0   | 2026-04-26 | Initial release with quote style adjustment and Outlook-style reply header formatting |
 
 ---
@@ -166,7 +170,7 @@ Use the same version number as `manifest.json` before uploading.
 
 ## ⚠️ Gmail DOM Compatibility
 
-SmartRe detects Gmail reply button clicks, opens hidden quoted content by clicking Gmail's quote expansion control when it exists, then formats Gmail's generated reply content. In rich text mode, it formats `blockquote.gmail_quote` and `div.gmail_attr` elements. In plain text mode, it formats the reply body editor directly.
+SmartRe detects Gmail reply button clicks, opens hidden quoted content by clicking Gmail's quote expansion control when it exists, then formats or removes Gmail's generated reply content. In rich text mode, it formats `blockquote.gmail_quote` and `div.gmail_attr` elements, or removes Gmail's generated quote container when quote removal is enabled. In plain text mode, it formats or removes generated quote text in the reply body editor directly.
 
 The extension depends on Gmail's internal DOM class names. If Gmail changes its reply DOM, the selectors in `src/content.js` may need to be updated.
 

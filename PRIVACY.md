@@ -1,8 +1,8 @@
 # Privacy Policy
 
-Last updated: April 26, 2026
+Last updated: April 29, 2026
 
-SmartRe for Gmail™ is a Chrome extension that formats quoted reply content and original-message headers in Gmail reply drafts.
+SmartRe for Gmail™ is a Chrome extension that formats or removes quoted reply content and original-message headers in Gmail reply drafts.
 
 ## Data handled by the extension
 
@@ -12,15 +12,16 @@ SmartRe for Gmail handles the minimum data needed to provide its reply-formattin
 * The Gmail thread subject shown on the current Gmail page
 * The signed-in Chrome profile email address, used only to add the `To` line to the rewritten reply header
 * The Gmail account display name when it can be detected from the Gmail page, used only with the `To` line
-* Extension settings, such as whether quote style adjustment and reply header rewriting are enabled
+* Extension settings, such as quote handling settings, reply header rewriting settings, and the user's reply header template
 
 ## How the data is used
 
 The extension uses this data only inside the user's browser to:
 
 * Adjust the appearance of quoted reply text
+* Remove quoted original messages from reply drafts when the user enables quote removal mode
 * Remove leading quote markers in Gmail plain text reply mode
-* Rewrite Gmail's one-line reply header into a readable `Original message` style header
+* Rewrite Gmail's one-line reply header using the user's reply header template
 * Save the user's extension settings
 
 ## Data sharing and transfer
@@ -31,13 +32,13 @@ The extension does not sell, share, or transfer user data for advertising, analy
 
 ## Data storage
 
-SmartRe for Gmail stores only extension settings using Chrome Storage Sync.
+SmartRe for Gmail stores only extension settings using Chrome Storage Sync. These settings may include the user's reply header template.
 
 The extension does not store Gmail message contents, rewritten headers, profile email addresses, or account display names outside the current Gmail page.
 
 ## Limited Use disclosure
 
-SmartRe for Gmail uses data obtained through Chrome extension permissions only to provide and improve its single purpose: formatting quoted reply content and original-message headers in Gmail replies.
+SmartRe for Gmail uses data obtained through Chrome extension permissions only to provide and improve its single purpose: formatting or removing quoted reply content and original-message headers in Gmail replies.
 
 The extension does not use or transfer user data for personalized advertising, retargeting, interest-based advertising, creditworthiness decisions, or any purpose unrelated to this user-facing feature.
 

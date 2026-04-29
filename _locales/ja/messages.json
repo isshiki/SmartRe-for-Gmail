@@ -39,7 +39,7 @@
     "message": "使用できる変数: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail"
   },
   "resetHeaderTemplate": {
-    "message": "デフォルトに戻す"
+    "message": "テンプレートを初期値に戻す"
   },
   "settingsNote": {
     "message": "この拡張機能は、返信時に引用部分を自動的に開きます。"

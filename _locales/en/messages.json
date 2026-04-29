@@ -39,7 +39,7 @@
     "message": "Available variables: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail"
   },
   "resetHeaderTemplate": {
-    "message": "Reset to default"
+    "message": "Reset template to default"
   },
   "settingsNote": {
     "message": "This extension automatically expands quoted content when you reply."

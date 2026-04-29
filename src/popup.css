@@ -171,7 +171,7 @@ textarea {
   border-radius: 6px;
   color: var(--text);
   font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  min-height: 118px;
+  min-height: 104px;
   padding: 8px;
   resize: vertical;
   width: 100%;
@@ -203,11 +203,9 @@ textarea:disabled,
 }
 
 .settings-note {
-  border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
-  margin-top: 2px;
-  padding-top: 10px;
+  margin-top: 8px;
 }
 
 input[role="switch"] {

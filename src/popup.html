@@ -44,6 +44,18 @@
         <input id="rewriteHeaderEnabled" type="checkbox" role="switch">
       </label>
 
+      <div class="template-settings" data-template-settings>
+        <div class="template-label-row">
+          <label for="replyHeaderTemplate" data-i18n="replyHeaderTemplateLabel">Reply header template</label>
+          <button type="button" class="help-button" id="templateHelpButton" aria-controls="templateHelp" aria-expanded="false" data-i18n-aria-label="replyHeaderTemplateHelpButton">?</button>
+        </div>
+        <div class="template-help" id="templateHelp" hidden>
+          <p data-i18n="replyHeaderTemplateHelp">Available variables: $from, $fromName, $fromEmail, $date, $subject, $to, $toName, $toEmail</p>
+        </div>
+        <textarea id="replyHeaderTemplate" rows="5" spellcheck="false"></textarea>
+        <button type="button" class="secondary-button" id="resetHeaderTemplate" data-i18n="resetHeaderTemplate">Reset to default</button>
+      </div>
+
       <p class="settings-note" data-i18n="settingsNote">
         This extension automatically expands quoted content when you reply.
       </p>

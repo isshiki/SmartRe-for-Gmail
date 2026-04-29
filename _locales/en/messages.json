@@ -29,6 +29,18 @@
   "rewriteHeaderHelp": {
     "message": "Formats the sender, date, subject, and To line in an Outlook-style header."
   },
+  "replyHeaderTemplateLabel": {
+    "message": "Reply header template"
+  },
+  "replyHeaderTemplateHelpButton": {
+    "message": "Show template variables"
+  },
+  "replyHeaderTemplateHelp": {
+    "message": "Available variables: $from, $fromName, $fromEmail, $date, $subject, $to, $toName, $toEmail"
+  },
+  "resetHeaderTemplate": {
+    "message": "Reset to default"
+  },
   "settingsNote": {
     "message": "This extension automatically expands quoted content when you reply."
   },

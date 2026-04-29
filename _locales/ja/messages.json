@@ -29,6 +29,18 @@
   "rewriteHeaderHelp": {
     "message": "差出人、日時、件名、宛先をOutlookのような形式で読みやすく整えます。"
   },
+  "replyHeaderTemplateLabel": {
+    "message": "返信ヘッダテンプレート"
+  },
+  "replyHeaderTemplateHelpButton": {
+    "message": "テンプレート変数を表示"
+  },
+  "replyHeaderTemplateHelp": {
+    "message": "使用できる変数: $from, $fromName, $fromEmail, $date, $subject, $to, $toName, $toEmail"
+  },
+  "resetHeaderTemplate": {
+    "message": "デフォルトに戻す"
+  },
   "settingsNote": {
     "message": "この拡張機能は、返信時に引用部分を自動的に開きます。"
   },

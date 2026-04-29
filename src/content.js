@@ -2,11 +2,22 @@ globalThis.chrome = globalThis.browser ? globalThis.browser : globalThis.chrome;
 
 const api = globalThis.chrome;
 
+const DEFAULT_REPLY_HEADER_TEMPLATE = [
+  "---------- Original message ---------",
+  "From: $from",
+  "Date: $date",
+  "Subject: $subject",
+  "To: $to"
+].join("\n");
+
 const SETTINGS_DEFAULTS = {
   removeQuoteEnabled: false,
   adjustQuoteStyleEnabled: true,
-  rewriteHeaderEnabled: true
+  rewriteHeaderEnabled: true,
+  replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE
 };
+
+const TEMPLATE_VARIABLE_PATTERN = /\$(fromName|fromEmail|from|toName|toEmail|to|date|subject)(?![A-Za-z0-9_])/g;
 
 const TIMEOUT_SEC = 5;
 const TRIM_CLICK_DELAY_MS = 700;
@@ -264,13 +275,17 @@ function getProfileNameFromGmailUi(email) {
 async function getProfileMailbox() {
   const email = await getProfileEmail();
   if (!email) {
-    return "";
+    return { name: "", email: "", text: "" };
   }
 
   const name = getProfileNameFromGmailUi(email);
   debugLog("Profile display name lookup finished.", { hasName: Boolean(name) });
 
-  return name ? `${name} <${email}>` : `<${email}>`;
+  return {
+    name,
+    email,
+    text: formatMailbox(name, email)
+  };
 }
 
 function findComposeRootFromElement(element) {
@@ -385,9 +400,17 @@ async function formatComposeRoot(composeRoot, settings) {
 
   if (settings.rewriteHeaderEnabled) {
     const subject = getSubjectText();
-    const toAddress = await getProfileMailbox();
-    rewriteGmailHeaders(composeRoot, { subject, toAddress });
-    formatPlainTextBodies(composeRoot, settings, { subject, toAddress });
+    const toMailbox = await getProfileMailbox();
+    const context = {
+      subject,
+      toAddress: toMailbox.text,
+      toName: toMailbox.name,
+      toEmail: toMailbox.email,
+      replyHeaderTemplate: settings.replyHeaderTemplate
+    };
+
+    rewriteGmailHeaders(composeRoot, context);
+    formatPlainTextBodies(composeRoot, settings, context);
     return;
   }
 
@@ -588,11 +611,50 @@ function appendBr(parent) {
   parent.appendChild(document.createElement("br"));
 }
 
-function appendHeaderLine(parent, label, value) {
-  if (!value) return;
+function getReplyHeaderTemplate(template) {
+  return typeof template === "string" ? template : DEFAULT_REPLY_HEADER_TEMPLATE;
+}
 
-  appendText(parent, `${label}: ${value}`);
-  appendBr(parent);
+function normalizeTemplateNewlines(template) {
+  return getReplyHeaderTemplate(template)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
+function buildTemplateVariables(parsed, { subject, toAddress, toName, toEmail }) {
+  return {
+    from: formatMailbox(parsed.senderName, parsed.email),
+    fromName: parsed.senderName || "",
+    fromEmail: parsed.email || "",
+    date: parsed.date || "",
+    subject: subject || "",
+    to: toAddress || "",
+    toName: toName || "",
+    toEmail: toEmail || ""
+  };
+}
+
+function renderHeaderTemplate(parsed, context) {
+  const variables = buildTemplateVariables(parsed, context);
+
+  return normalizeTemplateNewlines(context.replyHeaderTemplate)
+    .replace(TEMPLATE_VARIABLE_PATTERN, (matched, key) => variables[key] ?? "");
+}
+
+function buildHeaderTemplateLines(parsed, context) {
+  return renderHeaderTemplate(parsed, context).split("\n");
+}
+
+function appendHeaderTemplate(parent, lines) {
+  lines.forEach((line, index) => {
+    if (line) {
+      appendText(parent, line);
+    }
+
+    if (index < lines.length - 1) {
+      appendBr(parent);
+    }
+  });
 }
 
 function isBlankTextNode(node) {
@@ -623,42 +685,11 @@ function ensureSpacingAfterHeader(header) {
   }
 }
 
-function appendFromLine(parent, parsed) {
-  if (!parsed.senderName && !parsed.email) return;
-
-  appendText(parent, "From: ");
-
-  if (parsed.senderName) {
-    const strong = document.createElement("strong");
-    strong.className = "gmail_sendername";
-    strong.dir = "auto";
-    strong.textContent = parsed.senderName;
-    parent.appendChild(strong);
-  }
-
-  if (parsed.email) {
-    if (parsed.senderName) appendText(parent, " ");
-
-    const span = document.createElement("span");
-    span.dir = "auto";
-    span.textContent = `<${parsed.email}>`;
-    parent.appendChild(span);
-  }
-
-  appendBr(parent);
-}
-
-function rewriteHeaderElement(header, parsed, { subject, toAddress }) {
+function rewriteHeaderElement(header, parsed, context) {
   header.replaceChildren();
   header.dir = "ltr";
 
-  appendText(header, "---------- Original message ---------");
-  appendBr(header);
-
-  appendFromLine(header, parsed);
-  appendHeaderLine(header, "Date", parsed.date);
-  appendHeaderLine(header, "Subject", subject);
-  appendHeaderLine(header, "To", toAddress);
+  appendHeaderTemplate(header, buildHeaderTemplateLines(parsed, context));
 
   header.dataset.smartreProcessed = "true";
   ensureSpacingAfterHeader(header);
@@ -732,22 +763,14 @@ function dropLeadingBlankLines(lines) {
   return lines.slice(firstContentIndex);
 }
 
-function formatPlainTextMailbox(name, email) {
+function formatMailbox(name, email) {
   if (name && email) return `${name} <${email}>`;
   if (email) return `<${email}>`;
   return name || "";
 }
 
-function buildPlainTextHeaderLines(parsed, { subject, toAddress }) {
-  const lines = ["---------- Original message ---------"];
-  const from = formatPlainTextMailbox(parsed.senderName, parsed.email);
-
-  if (from) lines.push(`From: ${from}`);
-  if (parsed.date) lines.push(`Date: ${parsed.date}`);
-  if (subject) lines.push(`Subject: ${subject}`);
-  if (toAddress) lines.push(`To: ${toAddress}`);
-
-  return lines;
+function buildPlainTextHeaderLines(parsed, context) {
+  return buildHeaderTemplateLines(parsed, context);
 }
 
 function replacePlainTextBodyLines(body, lines) {

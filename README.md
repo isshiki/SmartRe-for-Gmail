@@ -28,13 +28,16 @@ It helps keep Gmail replies cleaner and easier to read.
 * Extracts sender name, sender address, and date from Gmail's generated header
 * Uses the Gmail thread subject as the `Subject` line
 * Uses the signed-in Chrome profile email, and the Gmail account display name when detectable, as the `To` line
-* Omits header lines when the required data cannot be detected
+* Supports an editable reply header template with variables such as `$from`, `$date`, `$subject`, and `$to`
+* Leaves unknown template variables as text and inserts empty text for values that cannot be detected
 
 ### ⚙️ Settings
 
 * Enable quote removal mode
 * Enable or disable quote style adjustment
 * Enable or disable reply header rewriting
+* Edit the reply header template directly in the popup
+* Reset the reply header template to the default Outlook-style format
 * Quote removal mode automatically disables quote style adjustment and reply header rewriting
 * Preferences are saved with Chrome Storage Sync
 * Popup UI supports English and Japanese through Chrome i18n
@@ -91,6 +94,7 @@ After changing source files, reload the extension on `chrome://extensions`, then
 
 | Version | Date       | Notes |
 | ------- | ---------- | ----- |
+| 1.2.0   | 2026-04-29 | Added editable reply header templates |
 | 1.1.0   | 2026-04-29 | Added quote removal mode for Gmail replies |
 | 1.0.0   | 2026-04-26 | Initial release with quote style adjustment and Outlook-style reply header formatting |
 
@@ -171,6 +175,8 @@ Use the same version number as `manifest.json` before uploading.
 ## ⚠️ Gmail DOM Compatibility
 
 SmartRe detects Gmail reply button clicks, opens hidden quoted content by clicking Gmail's quote expansion control when it exists, then formats or removes Gmail's generated reply content. In rich text mode, it formats `blockquote.gmail_quote` and `div.gmail_attr` elements, or removes Gmail's generated quote container when quote removal is enabled. In plain text mode, it formats or removes generated quote text in the reply body editor directly.
+
+Reply header templates and variable values are inserted as text, not HTML. Markup-like text such as `<script>` is displayed as plain text.
 
 The extension depends on Gmail's internal DOM class names. If Gmail changes its reply DOM, the selectors in `src/content.js` may need to be updated.
 

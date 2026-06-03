@@ -21,7 +21,7 @@ const TEMPLATE_VARIABLE_PATTERN = /\$(fromName|fromEmail|from|toName|toEmail|to|
 
 const TIMEOUT_SEC = 5;
 const TRIM_CLICK_DELAY_MS = 700;
-const DEBUG = false;
+const DEBUG = isDebugEnabled();
 const INITIALIZED_FLAG = "__smartreContentScriptInitialized";
 
 const SELECTORS = {
@@ -63,6 +63,14 @@ const SELECTORS = {
   messageBody: "div[role='textbox'][contenteditable='true']"
 };
 
+function isDebugEnabled() {
+  try {
+    return localStorage.getItem("smartreDebug") === "true";
+  } catch (error) {
+    return false;
+  }
+}
+
 function debugLog(message, data) {
   if (!DEBUG) return;
   if (data === undefined) {
@@ -93,6 +101,23 @@ function getFirstElement(selector, targetNode = document) {
   return targetNode.querySelector(selector);
 }
 
+function snapshotElements(selector, targetNode = document) {
+  return new WeakSet(Array.from(targetNode.querySelectorAll(selector)));
+}
+
+function getLastNewElement(selector, knownElements, targetNode = document) {
+  const elements = Array.from(targetNode.querySelectorAll(selector));
+
+  for (let index = elements.length - 1; index >= 0; index -= 1) {
+    const element = elements[index];
+    if (!knownElements?.has(element)) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
 function waitForElement(selector, timeoutSec, { targetNode = document, last = true } = {}) {
   return new Promise((resolve) => {
     const getElement = last ? getLastElement : getFirstElement;
@@ -118,6 +143,39 @@ function waitForElement(selector, timeoutSec, { targetNode = document, last = tr
 
     observer.observe(targetNode, { childList: true, subtree: true });
   });
+}
+
+function waitForNewElement(selector, timeoutSec, knownElements, { targetNode = document } = {}) {
+  return new Promise((resolve) => {
+    const element = getLastNewElement(selector, knownElements, targetNode);
+    if (element) {
+      resolve(element);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      const found = getLastNewElement(selector, knownElements, targetNode);
+      if (!found) return;
+
+      clearTimeout(timeoutId);
+      observer.disconnect();
+      resolve(found);
+    });
+
+    const timeoutId = setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeoutSec * 1000);
+
+    observer.observe(targetNode, { childList: true, subtree: true });
+  });
+}
+
+function getFocusedMessageBody() {
+  const activeElement = document.activeElement;
+  return activeElement instanceof Element && activeElement.matches(SELECTORS.messageBody)
+    ? activeElement
+    : null;
 }
 
 function getExistingFormatTarget(composeRoot) {
@@ -326,7 +384,7 @@ async function findActiveComposeRoot(anchorElement) {
   return findComposeRootFromElement(footer);
 }
 
-async function formatReplyDraft() {
+async function formatReplyDraft({ knownMessageBodies } = {}) {
   const settings = await loadSettings();
   debugLog("Formatting requested.", { settings });
 
@@ -335,23 +393,44 @@ async function formatReplyDraft() {
     return;
   }
 
-  const draftTarget = await waitForElement(
-    `${SELECTORS.trimButton}, ${SELECTORS.messageBody}, ${SELECTORS.draftFooter}`,
+  await sleep(100);
+
+  const focusedMessageBody = getFocusedMessageBody();
+  const newMessageBody = focusedMessageBody || (knownMessageBodies
+    ? await waitForNewElement(SELECTORS.messageBody, TIMEOUT_SEC, knownMessageBodies)
+    : null);
+  const draftTarget = newMessageBody || await waitForElement(
+    `${SELECTORS.messageBody}, ${SELECTORS.draftFooter}, ${SELECTORS.trimButton}`,
     TIMEOUT_SEC,
     { last: true }
   );
-  let trimButton = getLastElement(SELECTORS.trimButton);
-  if (!trimButton) {
-    trimButton = await waitForElement(SELECTORS.trimButton, 1, { last: true });
+  let composeRoot = await findActiveComposeRoot(draftTarget);
+  let trimButton = composeRoot ? getLastElement(SELECTORS.trimButton, composeRoot) : null;
+
+  if (!trimButton && composeRoot && composeRoot !== document) {
+    trimButton = await waitForElement(SELECTORS.trimButton, 1, { targetNode: composeRoot, last: true });
+  }
+
+  if (!trimButton && document.querySelectorAll(SELECTORS.trimButton).length === 1) {
+    trimButton = getLastElement(SELECTORS.trimButton);
+  }
+
+  if (!trimButton && !newMessageBody) {
+    trimButton = getLastElement(SELECTORS.trimButton);
+    if (!trimButton) {
+      trimButton = await waitForElement(SELECTORS.trimButton, 1, { last: true });
+    }
   }
 
   debugLog("Quote expansion button lookup finished.", {
     found: Boolean(trimButton),
     allTrimButtons: document.querySelectorAll(SELECTORS.trimButton).length,
+    scopedTrimButtons: composeRoot?.querySelectorAll?.(SELECTORS.trimButton).length || 0,
+    hasNewMessageBody: Boolean(newMessageBody),
     hasDraftTarget: Boolean(draftTarget)
   });
 
-  const composeRoot = await findActiveComposeRoot(trimButton || draftTarget);
+  composeRoot = await findActiveComposeRoot(trimButton || draftTarget);
   if (!composeRoot) {
     debugWarn("Compose root was not found.");
     return;
@@ -735,19 +814,36 @@ function getPlainTextBodyLines(body) {
 }
 
 function findPlainTextReplyHeader(lines) {
-  const maxHeaderSearchLines = Math.min(lines.length, 20);
+  const maxHeaderSearchLines = Math.min(lines.length, 80);
 
   for (let index = 0; index < maxHeaderSearchLines; index += 1) {
     const line = lines[index].trim();
     if (!line || line.startsWith(">")) continue;
 
     const parsed = parseGmailHeader(line);
-    if (parsed) {
+    if (isPlausibleReplyHeader(parsed) && hasPlainTextQuoteAfterHeader(lines, index)) {
       return { index, parsed };
     }
   }
 
   return null;
+}
+
+function isPlausibleReplyHeader(parsed) {
+  return Boolean(parsed?.date && (parsed.senderName || parsed.email));
+}
+
+function hasPlainTextQuoteAfterHeader(lines, headerIndex) {
+  const maxLookAhead = Math.min(lines.length, headerIndex + 8);
+
+  for (let index = headerIndex + 1; index < maxLookAhead; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+
+    return line.startsWith(">");
+  }
+
+  return false;
 }
 
 function stripPlainTextQuotePrefix(line) {
@@ -902,13 +998,15 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const knownMessageBodies = snapshotElements(SELECTORS.messageBody);
+
   debugLog("Reply click detected.", {
     selector: matchedReply.selector,
     target: describeClickTarget(event.target)
   });
 
   window.setTimeout(() => {
-    formatReplyDraft().catch((error) => {
+    formatReplyDraft({ knownMessageBodies }).catch((error) => {
       debugWarn("Formatting failed.", error);
     });
   }, 0);

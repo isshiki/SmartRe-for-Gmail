@@ -94,6 +94,7 @@ After changing source files, reload the extension on `chrome://extensions`, then
 
 | Version | Date       | Notes |
 | ------- | ---------- | ----- |
+| 1.2.1   | 2026-06-03 | Improved reply draft detection for signatures and Google Workspace accounts |
 | 1.2.0   | 2026-04-29 | Added editable reply header templates |
 | 1.1.0   | 2026-04-29 | Added quote removal mode for Gmail replies |
 | 1.0.0   | 2026-04-26 | Initial release with quote style adjustment and Outlook-style reply header formatting |

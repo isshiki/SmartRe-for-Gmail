@@ -28,7 +28,7 @@ It helps keep Gmail replies cleaner and easier to read.
 * Extracts sender name, sender address, and date from Gmail's generated header
 * Uses the Gmail thread subject as the `Subject` line
 * Uses the signed-in Chrome profile email, and the Gmail account display name when detectable, as the `To` line
-* Supports an editable reply header template with variables such as `$from`, `$date`, `$subject`, and `$to`
+* Supports an editable reply header template with variables such as `$from`, `$date`, `$subject`, `$to`, and `$cc`
 * Leaves unknown template variables as text and inserts empty text for values that cannot be detected
 
 ### ⚙️ Settings
@@ -94,6 +94,7 @@ After changing source files, reload the extension on `chrome://extensions`, then
 
 | Version | Date       | Notes |
 | ------- | ---------- | ----- |
+| 1.3.0   | 2026-07-17 | Improved original header detection and added Cc support |
 | 1.2.1   | 2026-06-03 | Improved reply draft detection for signatures and Google Workspace accounts |
 | 1.2.0   | 2026-04-29 | Added editable reply header templates |
 | 1.1.0   | 2026-04-29 | Added quote removal mode for Gmail replies |

@@ -1,6 +1,6 @@
 "use strict";
 
-const DEFAULT_REPLY_HEADER_TEMPLATE = [
+const OLD_DEFAULT_REPLY_HEADER_TEMPLATE = [
   "---------- Original message ---------",
   "From: $from",
   "Date: $date",
@@ -8,15 +8,29 @@ const DEFAULT_REPLY_HEADER_TEMPLATE = [
   "To: $to"
 ].join("\n");
 
+const DEFAULT_REPLY_HEADER_TEMPLATE = [
+  "---------- Original message ---------",
+  "From: $from",
+  "Date: $date",
+  "Subject: $subject",
+  "To: $to",
+  "Cc: $cc"
+].join("\n");
+
 const DEFAULT_SETTINGS = {
   removeQuoteEnabled: false,
   adjustQuoteStyleEnabled: true,
   rewriteHeaderEnabled: true,
-  replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE
+  replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE,
+  replyHeaderTemplateMigrationVersion: 0
 };
 
+const REPLY_HEADER_TEMPLATE_MIGRATION_VERSION = 1;
 const SWITCH_SETTING_IDS = ["removeQuoteEnabled", "adjustQuoteStyleEnabled", "rewriteHeaderEnabled"];
 const QUOTE_REMOVAL_DEPENDENTS = ["adjustQuoteStyleEnabled", "rewriteHeaderEnabled"];
+const CC_TEMPLATE_VARIABLE_PATTERN = /\$(ccName|ccEmail|cc)(?![A-Za-z0-9_])/;
+const TO_HEADER_TEMPLATE_LINE_PATTERN = /^\s*(to|宛先)\s*(?:[:：]|\s)\s*.*\$(toName|toEmail|to)(?![A-Za-z0-9_])/i;
+const CC_HEADER_TEMPLATE_LINE_PATTERN = /^\s*cc\s*(?:[:：]|\s)/i;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -70,13 +84,63 @@ function saveSettings(settings) {
 }
 
 function normalizeSettings(settings) {
-  const normalized = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  return { ...DEFAULT_SETTINGS, ...(settings || {}) };
+}
 
-  if (typeof normalized.replyHeaderTemplate !== "string") {
-    normalized.replyHeaderTemplate = DEFAULT_REPLY_HEADER_TEMPLATE;
+function migrateReplyHeaderTemplate(template) {
+  if (typeof template !== "string") {
+    return { template: DEFAULT_REPLY_HEADER_TEMPLATE, changed: true };
   }
 
-  return normalized;
+  const normalized = template
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+
+  if (normalized === OLD_DEFAULT_REPLY_HEADER_TEMPLATE) {
+    return { template: DEFAULT_REPLY_HEADER_TEMPLATE, changed: true };
+  }
+
+  if (
+    CC_TEMPLATE_VARIABLE_PATTERN.test(normalized) ||
+    normalized.split("\n").some((line) => CC_HEADER_TEMPLATE_LINE_PATTERN.test(line))
+  ) {
+    return { template: normalized, changed: normalized !== template };
+  }
+
+  const lines = normalized.split("\n");
+  const toLineIndex = lines.findIndex((line) => TO_HEADER_TEMPLATE_LINE_PATTERN.test(line));
+  if (toLineIndex === -1) {
+    return { template: normalized, changed: normalized !== template };
+  }
+
+  lines.splice(toLineIndex + 1, 0, "Cc: $cc");
+  return { template: lines.join("\n"), changed: true };
+}
+
+function migrateSettings(settings) {
+  const normalized = normalizeSettings(settings);
+  const migrationVersion = Number(normalized.replyHeaderTemplateMigrationVersion || 0);
+  if (migrationVersion >= REPLY_HEADER_TEMPLATE_MIGRATION_VERSION) {
+    return { settings: normalized, updates: null };
+  }
+
+  const migrated = migrateReplyHeaderTemplate(normalized.replyHeaderTemplate);
+  const updates = {
+    replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+  };
+
+  if (migrated.changed) {
+    updates.replyHeaderTemplate = migrated.template;
+  }
+
+  return {
+    settings: {
+      ...normalized,
+      replyHeaderTemplate: migrated.template,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+    },
+    updates
+  };
 }
 
 function renderSettings(settings) {
@@ -147,7 +211,12 @@ async function init() {
   applyVersion();
   setupTemplateHelp();
 
-  let settings = normalizeSettings(await loadSettings());
+  const migrated = migrateSettings(await loadSettings());
+  let settings = migrated.settings;
+  if (migrated.updates) {
+    await saveSettings(migrated.updates);
+  }
+
   renderSettings(settings);
 
   SWITCH_SETTING_IDS.forEach((id) => {
@@ -172,21 +241,29 @@ async function init() {
   templateTextarea?.addEventListener("input", async () => {
     settings = {
       ...settings,
-      replyHeaderTemplate: templateTextarea.value
+      replyHeaderTemplate: templateTextarea.value,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
     };
 
-    const saved = await saveSettings({ replyHeaderTemplate: templateTextarea.value });
+    const saved = await saveSettings({
+      replyHeaderTemplate: templateTextarea.value,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+    });
     setStatus(saved ? "settingsSaved" : "settingsSaveFailed", saved);
   });
 
   resetButton?.addEventListener("click", async () => {
     settings = {
       ...settings,
-      replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE
+      replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
     };
     renderSettings(settings);
 
-    const saved = await saveSettings({ replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE });
+    const saved = await saveSettings({
+      replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+    });
     setStatus(saved ? "settingsSaved" : "settingsSaveFailed", saved);
   });
 }

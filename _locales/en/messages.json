@@ -36,7 +36,7 @@
     "message": "Show template variables"
   },
   "replyHeaderTemplateHelp": {
-    "message": "Available variables: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail"
+    "message": "Available variables: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail, $$cc, $$ccName, $$ccEmail"
   },
   "resetHeaderTemplate": {
     "message": "Reset template to default"

@@ -2,7 +2,7 @@ globalThis.chrome = globalThis.browser ? globalThis.browser : globalThis.chrome;
 
 const api = globalThis.chrome;
 
-const DEFAULT_REPLY_HEADER_TEMPLATE = [
+const OLD_DEFAULT_REPLY_HEADER_TEMPLATE = [
   "---------- Original message ---------",
   "From: $from",
   "Date: $date",
@@ -10,14 +10,30 @@ const DEFAULT_REPLY_HEADER_TEMPLATE = [
   "To: $to"
 ].join("\n");
 
+const DEFAULT_REPLY_HEADER_TEMPLATE = [
+  "---------- Original message ---------",
+  "From: $from",
+  "Date: $date",
+  "Subject: $subject",
+  "To: $to",
+  "Cc: $cc"
+].join("\n");
+
 const SETTINGS_DEFAULTS = {
   removeQuoteEnabled: false,
   adjustQuoteStyleEnabled: true,
   rewriteHeaderEnabled: true,
-  replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE
+  replyHeaderTemplate: DEFAULT_REPLY_HEADER_TEMPLATE,
+  replyHeaderTemplateMigrationVersion: 0
 };
 
-const TEMPLATE_VARIABLE_PATTERN = /\$(fromName|fromEmail|from|toName|toEmail|to|date|subject)(?![A-Za-z0-9_])/g;
+const REPLY_HEADER_TEMPLATE_MIGRATION_VERSION = 1;
+const TEMPLATE_VARIABLE_PATTERN = /\$(fromName|fromEmail|from|toName|toEmail|to|ccName|ccEmail|cc|date|subject)(?![A-Za-z0-9_])/g;
+const CC_TEMPLATE_VARIABLE_PATTERN = /\$(ccName|ccEmail|cc)(?![A-Za-z0-9_])/;
+const TO_HEADER_TEMPLATE_LINE_PATTERN = /^\s*(to|宛先)\s*(?:[:：]|\s)\s*.*\$(toName|toEmail|to)(?![A-Za-z0-9_])/i;
+const CC_HEADER_TEMPLATE_LINE_PATTERN = /^\s*cc\s*(?:[:：]|\s)/i;
+const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
+const MAILBOX_PATTERN = /(?:"?([^"<,;]+?)"?\s*)?<([^<>@\s]+@[^<>\s]+)>/ig;
 
 const TIMEOUT_SEC = 5;
 const TRIM_CLICK_DELAY_MS = 700;
@@ -60,7 +76,24 @@ const SELECTORS = {
   subject: "h2.hP",
 
   // Gmail返信の本文エディタ。プレーンテキストモードでは引用もここに直接入る。
-  messageBody: "div[role='textbox'][contenteditable='true']"
+  messageBody: "div[role='textbox'][contenteditable='true']",
+
+  // Gmailスレッド内の元メール本体。元メールのTo欄を読む補助に使う。
+  messageRoot: "div.adn, div[role='listitem']",
+
+  // Gmail返信作成欄のTo/Cc入力エリア。返信先の複数宛先を読む補助に使う。
+  composeRecipientContainers: "[name='to'], [name='cc']",
+
+  // Gmail元メールヘッダの詳細表示ボタン。元メールのTo/Ccを正確に読む補助に使う。
+  originalDetailButton: [
+    "div.ajy[aria-label='Show details']",
+    "div.ajy[aria-label='詳細を表示']",
+    "div.ajy[data-tooltip='Show details']",
+    "div.ajy[data-tooltip='詳細を表示']"
+  ].join(", "),
+
+  // Gmail元メールヘッダの詳細表示テーブル。
+  originalDetailTable: "div.ajA table.ajC"
 };
 
 function isDebugEnabled() {
@@ -228,6 +261,25 @@ function clickElement(element) {
   });
 }
 
+function dispatchEscapeKey() {
+  const target = document.activeElement instanceof Element ? document.activeElement : document.body;
+  const dispatchTo = (receiver, type) => {
+    receiver.dispatchEvent(new KeyboardEvent(type, {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true
+    }));
+  };
+
+  ["keydown", "keyup"].forEach((type) => {
+    dispatchTo(target, type);
+    dispatchTo(document, type);
+  });
+}
+
 function storageGet(defaults) {
   if (!api?.storage?.sync) {
     return Promise.resolve({ ...defaults });
@@ -251,8 +303,90 @@ function storageGet(defaults) {
   });
 }
 
+function storageSet(settings) {
+  if (!api?.storage?.sync) {
+    return Promise.resolve(false);
+  }
+
+  if (globalThis.browser?.storage?.sync) {
+    return api.storage.sync.set(settings)
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  return new Promise((resolve) => {
+    api.storage.sync.set(settings, () => {
+      resolve(!api.runtime?.lastError);
+    });
+  });
+}
+
+function migrateReplyHeaderTemplate(template) {
+  if (typeof template !== "string") {
+    return { template: DEFAULT_REPLY_HEADER_TEMPLATE, changed: true };
+  }
+
+  const normalized = template
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+
+  if (normalized === OLD_DEFAULT_REPLY_HEADER_TEMPLATE) {
+    return { template: DEFAULT_REPLY_HEADER_TEMPLATE, changed: true };
+  }
+
+  if (
+    CC_TEMPLATE_VARIABLE_PATTERN.test(normalized) ||
+    normalized.split("\n").some((line) => CC_HEADER_TEMPLATE_LINE_PATTERN.test(line))
+  ) {
+    return { template: normalized, changed: normalized !== template };
+  }
+
+  const lines = normalized.split("\n");
+  const toLineIndex = lines.findIndex((line) => TO_HEADER_TEMPLATE_LINE_PATTERN.test(line));
+  if (toLineIndex === -1) {
+    return { template: normalized, changed: normalized !== template };
+  }
+
+  lines.splice(toLineIndex + 1, 0, "Cc: $cc");
+  return { template: lines.join("\n"), changed: true };
+}
+
+function migrateSettings(settings) {
+  const migrationVersion = Number(settings.replyHeaderTemplateMigrationVersion || 0);
+  if (migrationVersion >= REPLY_HEADER_TEMPLATE_MIGRATION_VERSION) {
+    return { settings, updates: null };
+  }
+
+  const migrated = migrateReplyHeaderTemplate(settings.replyHeaderTemplate);
+  const updates = {
+    replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+  };
+
+  if (migrated.changed) {
+    updates.replyHeaderTemplate = migrated.template;
+  }
+
+  return {
+    settings: {
+      ...settings,
+      replyHeaderTemplate: migrated.template,
+      replyHeaderTemplateMigrationVersion: REPLY_HEADER_TEMPLATE_MIGRATION_VERSION
+    },
+    updates
+  };
+}
+
 async function loadSettings() {
-  return storageGet(SETTINGS_DEFAULTS);
+  const settings = await storageGet(SETTINGS_DEFAULTS);
+  const migrated = migrateSettings(settings);
+
+  if (migrated.updates) {
+    storageSet(migrated.updates).then((saved) => {
+      debugLog("Settings migration finished.", { saved });
+    });
+  }
+
+  return migrated.settings;
 }
 
 function sendMessage(message) {
@@ -333,17 +467,499 @@ function getProfileNameFromGmailUi(email) {
 async function getProfileMailbox() {
   const email = await getProfileEmail();
   if (!email) {
-    return { name: "", email: "", text: "" };
+    return createMailboxContext([], "profile");
   }
 
   const name = getProfileNameFromGmailUi(email);
   debugLog("Profile display name lookup finished.", { hasName: Boolean(name) });
 
+  return createMailboxContext([{ name, email }], "profile");
+}
+
+function uniqueMailboxes(mailboxes) {
+  const seen = new Set();
+  const unique = [];
+
+  mailboxes.forEach((mailbox) => {
+    const email = (mailbox.email || "").trim();
+    const key = email.toLowerCase();
+    if (!email || seen.has(key)) return;
+
+    seen.add(key);
+    unique.push({
+      name: (mailbox.name || "").trim(),
+      email
+    });
+  });
+
+  return unique;
+}
+
+function createMailboxContext(mailboxes, source = "") {
+  const unique = uniqueMailboxes(mailboxes);
+
   return {
-    name,
-    email,
-    text: formatMailbox(name, email)
+    mailboxes: unique,
+    name: unique.map((mailbox) => mailbox.name).filter(Boolean).join(", "),
+    email: unique.map((mailbox) => mailbox.email).join(", "),
+    text: unique.map((mailbox) => formatMailbox(mailbox.name, mailbox.email)).join(", "),
+    source
   };
+}
+
+function parseMailboxesFromText(text) {
+  const value = text || "";
+  const mailboxes = [];
+  const matchedEmails = new Set();
+
+  for (const match of value.matchAll(MAILBOX_PATTERN)) {
+    const name = normalizeMailboxName(match[1] || "");
+    const email = match[2] || "";
+    mailboxes.push({ name, email });
+    matchedEmails.add(email.toLowerCase());
+  }
+
+  for (const match of value.matchAll(EMAIL_PATTERN)) {
+    const email = match[0] || "";
+    if (!matchedEmails.has(email.toLowerCase())) {
+      mailboxes.push({ name: "", email });
+    }
+  }
+
+  return uniqueMailboxes(mailboxes);
+}
+
+function normalizeMailboxName(name) {
+  return (name || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^(to|宛先|cc|bcc)\s*[:：]?\s*/i, "")
+    .trim();
+}
+
+function collectMailboxesFromElementAttributes(element) {
+  const email = element.getAttribute("email") || element.getAttribute("data-hovercard-id") || "";
+  const explicitName = element.getAttribute("name") || element.getAttribute("data-name") || "";
+  const parsedFromText = parseMailboxesFromText(element.textContent || "")
+    .find((mailbox) => mailbox.email.toLowerCase() === email.toLowerCase());
+  const name = explicitName || parsedFromText?.name || element.textContent || "";
+
+  return email ? [{ name: normalizeMailboxName(name), email }] : [];
+}
+
+function collectMailboxesFromNode(node) {
+  if (!(node instanceof Element)) {
+    return [];
+  }
+
+  const mailboxes = [];
+
+  node.querySelectorAll("[email], [data-hovercard-id]").forEach((element) => {
+    mailboxes.push(...collectMailboxesFromElementAttributes(element));
+  });
+
+  ["title", "aria-label", "data-tooltip", "textContent"].forEach((field) => {
+    const value = field === "textContent" ? node.textContent : node.getAttribute(field);
+    mailboxes.push(...parseMailboxesFromText(value || ""));
+  });
+
+  return uniqueMailboxes(mailboxes);
+}
+
+function normalizeHeaderLabel(text) {
+  return (text || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, "")
+    .replace(/[：:]+$/u, "")
+    .toLowerCase();
+}
+
+function isToHeaderLabel(text) {
+  const label = normalizeHeaderLabel(text);
+  return label === "to" || label === "宛先";
+}
+
+function isCcHeaderLabel(text) {
+  const label = normalizeHeaderLabel(text);
+  return label === "cc";
+}
+
+function isFromHeaderLabel(text) {
+  const label = normalizeHeaderLabel(text);
+  return label === "from" || label === "差出人";
+}
+
+function isDateHeaderLabel(text) {
+  const label = normalizeHeaderLabel(text);
+  return label === "date" || label === "日付";
+}
+
+function isSubjectHeaderLabel(text) {
+  const label = normalizeHeaderLabel(text);
+  return label === "subject" || label === "件名";
+}
+
+function getOriginalMessageRoot(composeRoot) {
+  if (!(composeRoot instanceof Element)) {
+    return null;
+  }
+
+  const closestRoot = composeRoot.closest(SELECTORS.messageRoot);
+  if (closestRoot) {
+    return closestRoot;
+  }
+
+  let current = composeRoot.previousElementSibling;
+  while (current) {
+    if (current.matches?.(SELECTORS.messageRoot)) {
+      return current;
+    }
+
+    const nestedRoot = current.querySelector?.(SELECTORS.messageRoot);
+    if (nestedRoot) {
+      return nestedRoot;
+    }
+
+    current = current.previousElementSibling;
+  }
+
+  return null;
+}
+
+function getOriginalDetailButtons(composeRoot) {
+  const buttons = [];
+  const messageRoot = getOriginalMessageRoot(composeRoot);
+
+  if (messageRoot) {
+    messageRoot.querySelectorAll(SELECTORS.originalDetailButton).forEach((button) => {
+      addUniqueElement(buttons, button);
+    });
+  }
+
+  let current = composeRoot instanceof Element ? composeRoot.previousElementSibling : null;
+  while (current && buttons.length === 0) {
+    current.querySelectorAll?.(SELECTORS.originalDetailButton).forEach((button) => {
+      addUniqueElement(buttons, button);
+    });
+    current = current.previousElementSibling;
+  }
+
+  document.querySelectorAll(SELECTORS.originalDetailButton).forEach((button) => {
+    addUniqueElement(buttons, button);
+  });
+
+  return buttons;
+}
+
+function getDetailCell(row) {
+  return row.querySelector("td.gL") || row.querySelector("td:last-child") || row;
+}
+
+function parseOriginalDetailTable(table) {
+  if (!(table instanceof Element)) {
+    return null;
+  }
+
+  const detail = {
+    from: createMailboxContext([], "detailFrom"),
+    to: createMailboxContext([], "detailTo"),
+    cc: createMailboxContext([], "detailCc"),
+    date: "",
+    subject: ""
+  };
+
+  table.querySelectorAll("tr").forEach((row) => {
+    const label = row.querySelector("th")?.textContent || "";
+    const cell = getDetailCell(row);
+
+    if (isFromHeaderLabel(label)) {
+      detail.from = createMailboxContext(collectMailboxesFromNode(cell), "detailFrom");
+    } else if (isToHeaderLabel(label)) {
+      detail.to = createMailboxContext(collectMailboxesFromNode(cell), "detailTo");
+    } else if (isCcHeaderLabel(label)) {
+      detail.cc = createMailboxContext(collectMailboxesFromNode(cell), "detailCc");
+    } else if (isDateHeaderLabel(label)) {
+      detail.date = normalizeHeaderText(cell.textContent || "");
+    } else if (isSubjectHeaderLabel(label)) {
+      detail.subject = normalizeHeaderText(cell.textContent || "");
+    }
+  });
+
+  if (!detail.from.mailboxes.length && !detail.to.mailboxes.length && !detail.date && !detail.subject) {
+    return null;
+  }
+
+  return detail;
+}
+
+function normalizeComparableText(text) {
+  return normalizeHeaderText(text).toLowerCase();
+}
+
+function normalizeDateParts(text) {
+  return (text || "")
+    .match(/\d+/g)
+    ?.slice(0, 5)
+    .map((part) => String(Number(part)))
+    .join("-") || "";
+}
+
+function scoreOriginalDetail(detail, parsed, subject) {
+  if (!detail) {
+    return 0;
+  }
+
+  let score = 0;
+  const parsedEmail = (parsed?.email || "").toLowerCase();
+  const parsedName = normalizeComparableText(parsed?.senderName || "");
+  const parsedDate = normalizeDateParts(parsed?.date || "");
+  const expectedSubject = normalizeComparableText(subject || "");
+  const detailSubject = normalizeComparableText(detail.subject || "");
+
+  if (parsedEmail && hasMailboxEmail(detail.from, parsedEmail)) {
+    score += 8;
+  }
+
+  if (parsedName && normalizeComparableText(detail.from.name).includes(parsedName)) {
+    score += 2;
+  }
+
+  if (parsedDate && normalizeDateParts(detail.date) === parsedDate) {
+    score += 6;
+  }
+
+  if (expectedSubject && detailSubject && (
+    expectedSubject === detailSubject ||
+    expectedSubject.endsWith(detailSubject) ||
+    detailSubject.endsWith(expectedSubject)
+  )) {
+    score += 3;
+  }
+
+  return score;
+}
+
+function getBestOriginalDetail(tables, parsed, subject) {
+  return tables
+    .map((table) => ({
+      table,
+      detail: parseOriginalDetailTable(table)
+    }))
+    .map((candidate) => ({
+      ...candidate,
+      score: scoreOriginalDetail(candidate.detail, parsed, subject)
+    }))
+    .filter((candidate) => candidate.detail && candidate.score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.detail || null;
+}
+
+async function getOriginalDetailFromPopup(composeRoot, parsed, subject) {
+  if (!parsed) {
+    return null;
+  }
+
+  const existingTables = snapshotElements(SELECTORS.originalDetailTable);
+  const buttons = getOriginalDetailButtons(composeRoot);
+
+  for (const button of buttons) {
+    clickElement(button);
+
+    const newTable = await waitForNewElement(SELECTORS.originalDetailTable, 1, existingTables);
+    const newTables = Array.from(document.querySelectorAll(SELECTORS.originalDetailTable))
+      .filter((table) => !existingTables.has(table));
+    const candidates = newTable ? [...newTables, newTable] : newTables;
+    const matchedNewDetail = getBestOriginalDetail(candidates, parsed, subject);
+    dispatchEscapeKey();
+
+    if (matchedNewDetail) {
+      debugLog("Original detail popup matched from newly opened table.", {
+        toCount: matchedNewDetail.to.mailboxes.length,
+        ccCount: matchedNewDetail.cc.mailboxes.length
+      });
+      return matchedNewDetail;
+    }
+  }
+
+  const matchedExistingDetail = getBestOriginalDetail(
+    Array.from(document.querySelectorAll(SELECTORS.originalDetailTable)),
+    parsed,
+    subject
+  );
+
+  debugLog("Original detail popup lookup finished.", {
+    found: Boolean(matchedExistingDetail),
+    buttonCount: buttons.length
+  });
+
+  return matchedExistingDetail;
+}
+
+function getOriginalMailboxesFromRows(messageRoot, isTargetLabel) {
+  if (!(messageRoot instanceof Element)) {
+    return [];
+  }
+
+  const mailboxes = [];
+
+  messageRoot.querySelectorAll("tr").forEach((row) => {
+    const cells = Array.from(row.children);
+    if (cells.length < 2 || !isTargetLabel(cells[0].textContent)) {
+      return;
+    }
+
+    cells.slice(1).forEach((cell) => {
+      mailboxes.push(...collectMailboxesFromNode(cell));
+    });
+  });
+
+  return uniqueMailboxes(mailboxes);
+}
+
+function getOriginalMailboxesFromHints(messageRoot, headerNames) {
+  if (!(messageRoot instanceof Element)) {
+    return [];
+  }
+
+  const mailboxes = [];
+  const headerPattern = new RegExp(`(^|\\s)(${headerNames.join("|")})\\s*[:：]?`, "i");
+
+  messageRoot.querySelectorAll("[title*='@'], [aria-label*='@'], [data-tooltip*='@']").forEach((element) => {
+    const hintText = [
+      element.textContent || "",
+      element.getAttribute("title") || "",
+      element.getAttribute("aria-label") || "",
+      element.getAttribute("data-tooltip") || ""
+    ].join(" ");
+
+    const mayBeUnlabeledToElement = headerNames.includes("to") && element.classList.contains("g2");
+    if (!headerPattern.test(hintText) && !mayBeUnlabeledToElement) {
+      return;
+    }
+
+    mailboxes.push(...collectMailboxesFromNode(element));
+  });
+
+  return uniqueMailboxes(mailboxes);
+}
+
+function getOriginalHeaderMailboxContext(composeRoot, {
+  label,
+  isTargetLabel,
+  hintHeaderNames,
+  source
+}) {
+  const messageRoot = getOriginalMessageRoot(composeRoot);
+  const mailboxes = [
+    ...getOriginalMailboxesFromRows(messageRoot, isTargetLabel),
+    ...getOriginalMailboxesFromHints(messageRoot, hintHeaderNames)
+  ];
+
+  const context = createMailboxContext(mailboxes, source);
+  debugLog(`Original ${label} lookup finished.`, {
+    found: context.mailboxes.length,
+    hasRoot: Boolean(messageRoot)
+  });
+
+  return context;
+}
+
+function getOriginalToMailboxContext(composeRoot) {
+  return getOriginalHeaderMailboxContext(composeRoot, {
+    label: "To",
+    isTargetLabel: isToHeaderLabel,
+    hintHeaderNames: ["to", "宛先"],
+    source: "originalTo"
+  });
+}
+
+function getOriginalCcMailboxContext(composeRoot) {
+  return getOriginalHeaderMailboxContext(composeRoot, {
+    label: "Cc",
+    isTargetLabel: isCcHeaderLabel,
+    hintHeaderNames: ["cc"],
+    source: "originalCc"
+  });
+}
+
+function addUniqueElement(elements, element) {
+  if (element instanceof Element && !elements.includes(element)) {
+    elements.push(element);
+  }
+}
+
+function getComposeRecipientSearchScopes(composeRoot) {
+  const scopes = [];
+
+  if (!(composeRoot instanceof Element)) {
+    return scopes;
+  }
+
+  [
+    composeRoot,
+    composeRoot.closest("table.IG"),
+    composeRoot.closest("div[role='dialog']"),
+    composeRoot.closest("div.M9"),
+    composeRoot.closest("div.AD")
+  ].forEach((element) => addUniqueElement(scopes, element));
+
+  let current = composeRoot.parentElement;
+  for (let depth = 0; current && current !== document.body && depth < 12; depth += 1) {
+    addUniqueElement(scopes, current);
+    if (current.matches?.("table.IG, div[role='dialog'], div.M9, div.AD")) {
+      break;
+    }
+    current = current.parentElement;
+  }
+
+  return scopes;
+}
+
+function getComposeRecipientMailboxes(composeRoot, recipientName) {
+  const mailboxes = [];
+  const scopes = getComposeRecipientSearchScopes(composeRoot);
+
+  scopes.forEach((scope) => {
+    scope.querySelectorAll(SELECTORS.composeRecipientContainers).forEach((container) => {
+      const name = (container.getAttribute("name") || "").toLowerCase();
+      if (name !== recipientName) {
+        return;
+      }
+
+      mailboxes.push(...collectMailboxesFromNode(container));
+    });
+  });
+
+  return uniqueMailboxes(mailboxes);
+}
+
+function getComposeRecipientMailboxContext(composeRoot, recipientName, source) {
+  const context = createMailboxContext(getComposeRecipientMailboxes(composeRoot, recipientName), source);
+
+  debugLog(`Compose ${recipientName} recipient lookup finished.`, {
+    found: context.mailboxes.length
+  });
+
+  return context;
+}
+
+async function getReplyMailboxSources(composeRoot) {
+  const sources = {
+    originalTo: getOriginalToMailboxContext(composeRoot),
+    originalCc: getOriginalCcMailboxContext(composeRoot),
+    composeTo: getComposeRecipientMailboxContext(composeRoot, "to", "composeTo"),
+    composeCc: getComposeRecipientMailboxContext(composeRoot, "cc", "composeCc"),
+    profile: await getProfileMailbox()
+  };
+
+  debugLog("Reply mailbox source lookup finished.", {
+    originalToCount: sources.originalTo.mailboxes.length,
+    originalCcCount: sources.originalCc.mailboxes.length,
+    composeToCount: sources.composeTo.mailboxes.length,
+    composeCcCount: sources.composeCc.mailboxes.length,
+    hasProfile: sources.profile.mailboxes.length > 0
+  });
+
+  return sources;
 }
 
 function findComposeRootFromElement(element) {
@@ -479,12 +1095,17 @@ async function formatComposeRoot(composeRoot, settings) {
 
   if (settings.rewriteHeaderEnabled) {
     const subject = getSubjectText();
-    const toMailbox = await getProfileMailbox();
+    const mailboxSources = await getReplyMailboxSources(composeRoot);
+    const parsedHeader = getParsedReplyHeader(composeRoot);
+    const originalDetail = await getOriginalDetailFromPopup(composeRoot, parsedHeader, subject);
+    const fallbackToMailbox = selectTemplateToMailbox(null, { mailboxSources });
     const context = {
       subject,
-      toAddress: toMailbox.text,
-      toName: toMailbox.name,
-      toEmail: toMailbox.email,
+      mailboxSources,
+      originalDetail,
+      toAddress: fallbackToMailbox.text,
+      toName: fallbackToMailbox.name,
+      toEmail: fallbackToMailbox.email,
       replyHeaderTemplate: settings.replyHeaderTemplate
     };
 
@@ -668,9 +1289,12 @@ function parseGmailHeader(headerText) {
   let senderName = "";
 
   const dateAndName = beforeEmail.match(/^(.+\d{1,2}:\d{2}(?:\s*(?:AM|PM))?)\s+(.+)$/i);
+  const dateOnly = beforeEmail.match(/^(.+\d{1,2}:\d{2}(?:\s*(?:AM|PM))?)$/i);
   if (dateAndName) {
     date = dateAndName[1].trim();
     senderName = dateAndName[2].trim();
+  } else if (dateOnly) {
+    date = dateOnly[1].trim();
   } else if (email) {
     senderName = beforeEmail.trim();
   }
@@ -680,6 +1304,30 @@ function parseGmailHeader(headerText) {
   }
 
   return { date, senderName, email };
+}
+
+function getParsedReplyHeader(composeRoot) {
+  const richTextHeaders = composeRoot.querySelectorAll(SELECTORS.header);
+
+  for (const header of richTextHeaders) {
+    if (header.dataset.smartreProcessed === "true" || isAlreadyFormattedHeaderText(header.textContent)) {
+      continue;
+    }
+
+    const parsed = parseGmailHeader(header.textContent);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  for (const body of getMessageBodies(composeRoot)) {
+    const header = findPlainTextReplyHeader(getPlainTextBodyLines(body));
+    if (header?.parsed) {
+      return header.parsed;
+    }
+  }
+
+  return null;
 }
 
 function appendText(parent, text) {
@@ -700,28 +1348,141 @@ function normalizeTemplateNewlines(template) {
     .replace(/\r/g, "\n");
 }
 
-function buildTemplateVariables(parsed, { subject, toAddress, toName, toEmail }) {
+function hasMailboxEmail(mailboxContext, email) {
+  const normalizedEmail = (email || "").trim().toLowerCase();
+  if (!normalizedEmail) {
+    return false;
+  }
+
+  return mailboxContext?.mailboxes?.some((mailbox) => (
+    mailbox.email.toLowerCase() === normalizedEmail
+  )) || false;
+}
+
+function getLegacyToMailboxContext({ toAddress, toName, toEmail }) {
+  if (toEmail) {
+    return createMailboxContext([{ name: toName || "", email: toEmail }], "legacy");
+  }
+
+  return createMailboxContext(parseMailboxesFromText(toAddress || ""), "legacy");
+}
+
+function selectTemplateToMailbox(parsed, context) {
+  const sources = context.mailboxSources || {};
+  const fromIsProfile = hasMailboxEmail(sources.profile, parsed?.email);
+
+  if (
+    fromIsProfile &&
+    sources.composeTo?.mailboxes?.length > 0 &&
+    sources.composeTo.mailboxes.length >= (sources.originalTo?.mailboxes?.length || 0)
+  ) {
+    return sources.composeTo;
+  }
+
+  if (sources.originalTo?.mailboxes?.length > 0) {
+    return sources.originalTo;
+  }
+
+  if (
+    fromIsProfile &&
+    sources.composeTo?.mailboxes?.length > 0
+  ) {
+    return sources.composeTo;
+  }
+
+  if (sources.profile?.mailboxes?.length > 0) {
+    return sources.profile;
+  }
+
+  if (sources.composeTo?.mailboxes?.length > 0) {
+    return sources.composeTo;
+  }
+
+  return getLegacyToMailboxContext(context);
+}
+
+function selectTemplateCcMailbox(parsed, context) {
+  const sources = context.mailboxSources || {};
+  const fromIsProfile = hasMailboxEmail(sources.profile, parsed?.email);
+
+  if (
+    fromIsProfile &&
+    sources.composeCc?.mailboxes?.length > 0 &&
+    sources.composeCc.mailboxes.length >= (sources.originalCc?.mailboxes?.length || 0)
+  ) {
+    return sources.composeCc;
+  }
+
+  if (sources.originalCc?.mailboxes?.length > 0) {
+    return sources.originalCc;
+  }
+
+  if (sources.composeCc?.mailboxes?.length > 0) {
+    return sources.composeCc;
+  }
+
+  return createMailboxContext([], "cc");
+}
+
+function buildTemplateVariables(parsed, context) {
+  const hasOriginalDetail = Boolean(context.originalDetail);
+  const originalDetail = context.originalDetail || {};
+  const fromMailbox = originalDetail.from?.mailboxes?.[0] || {
+    name: parsed.senderName || "",
+    email: parsed.email || ""
+  };
+  const toMailbox = hasOriginalDetail
+    ? originalDetail.to || createMailboxContext([], "detailTo")
+    : selectTemplateToMailbox(parsed, context);
+  const ccMailbox = hasOriginalDetail
+    ? originalDetail.cc || createMailboxContext([], "detailCc")
+    : selectTemplateCcMailbox(parsed, context);
+
   return {
-    from: formatMailbox(parsed.senderName, parsed.email),
-    fromName: parsed.senderName || "",
-    fromEmail: parsed.email || "",
-    date: parsed.date || "",
-    subject: subject || "",
-    to: toAddress || "",
-    toName: toName || "",
-    toEmail: toEmail || ""
+    from: formatMailbox(fromMailbox.name, fromMailbox.email),
+    fromName: fromMailbox.name || "",
+    fromEmail: fromMailbox.email || "",
+    date: originalDetail.date || parsed.date || "",
+    subject: originalDetail.subject || context.subject || "",
+    to: toMailbox.text || "",
+    toName: toMailbox.name || "",
+    toEmail: toMailbox.email || "",
+    cc: ccMailbox.text || "",
+    ccName: ccMailbox.name || "",
+    ccEmail: ccMailbox.email || ""
   };
 }
 
-function renderHeaderTemplate(parsed, context) {
-  const variables = buildTemplateVariables(parsed, context);
+function renderHeaderTemplateLine(line, variables) {
+  return line.replace(TEMPLATE_VARIABLE_PATTERN, (matched, key) => variables[key] ?? "");
+}
 
-  return normalizeTemplateNewlines(context.replyHeaderTemplate)
-    .replace(TEMPLATE_VARIABLE_PATTERN, (matched, key) => variables[key] ?? "");
+function isEmptyLabeledTemplateLine(line, renderedLine, variables) {
+  const variableKeys = Array.from(line.matchAll(TEMPLATE_VARIABLE_PATTERN), (match) => match[1]);
+
+  if (variableKeys.length === 0 || variableKeys.some((key) => Boolean(variables[key]))) {
+    return false;
+  }
+
+  const labelText = line.replace(TEMPLATE_VARIABLE_PATTERN, "").trim();
+  if (!/^(from|date|subject|to|cc|差出人|日時|件名|宛先)\s*[:：]?$/i.test(labelText)) {
+    return false;
+  }
+
+  return !renderedLine.replace(labelText, "").trim();
 }
 
 function buildHeaderTemplateLines(parsed, context) {
-  return renderHeaderTemplate(parsed, context).split("\n");
+  const variables = buildTemplateVariables(parsed, context);
+
+  return normalizeTemplateNewlines(context.replyHeaderTemplate)
+    .split("\n")
+    .map((line) => ({
+      source: line,
+      rendered: renderHeaderTemplateLine(line, variables)
+    }))
+    .filter(({ source, rendered }) => !isEmptyLabeledTemplateLine(source, rendered, variables))
+    .map(({ rendered }) => rendered);
 }
 
 function appendHeaderTemplate(parent, lines) {
@@ -976,10 +1737,39 @@ function matchesAnySelector(element, selectors) {
   return null;
 }
 
+function getElementActionText(element) {
+  if (!(element instanceof Element)) {
+    return "";
+  }
+
+  return [
+    element.getAttribute("aria-label") || "",
+    element.getAttribute("data-tooltip") || "",
+    element.textContent || ""
+  ].join(" ").trim();
+}
+
+function isReplyMenuItem(element) {
+  const menuItem = element instanceof Element
+    ? element.closest("[role='menuitem'], .J-N")
+    : null;
+
+  if (!menuItem) {
+    return null;
+  }
+
+  const actionText = getElementActionText(menuItem);
+  const isReplyAction = /reply|返信/i.test(actionText) && !/forward|転送/i.test(actionText);
+
+  return isReplyAction
+    ? { selector: "reply menu item", element: menuItem }
+    : null;
+}
+
 function describeClickTarget(target) {
   if (!(target instanceof Element)) return {};
 
-  const closestButton = target.closest("[role='button'], button[data-tooltip], button[aria-label], div[data-tooltip], div[aria-label], span.ams");
+  const closestButton = target.closest("[role='menuitem'], [role='button'], button[data-tooltip], button[aria-label], div[data-tooltip], div[aria-label], span.ams");
 
   return {
     tagName: target.tagName,
@@ -993,7 +1783,8 @@ function describeClickTarget(target) {
 }
 
 function handleDocumentClick(event) {
-  const matchedReply = matchesAnySelector(event.target, SELECTORS.replyButtons);
+  const matchedReply = matchesAnySelector(event.target, SELECTORS.replyButtons) ||
+    isReplyMenuItem(event.target);
   if (!matchedReply) {
     return;
   }

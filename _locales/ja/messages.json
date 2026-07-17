@@ -36,7 +36,7 @@
     "message": "テンプレート変数を表示"
   },
   "replyHeaderTemplateHelp": {
-    "message": "使用できる変数: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail"
+    "message": "使用できる変数: $$from, $$fromName, $$fromEmail, $$date, $$subject, $$to, $$toName, $$toEmail, $$cc, $$ccName, $$ccEmail"
   },
   "resetHeaderTemplate": {
     "message": "テンプレートを初期値に戻す"

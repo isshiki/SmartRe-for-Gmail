@@ -44,6 +44,40 @@ It helps keep Gmail replies cleaner and easier to read.
 
 ---
 
+## 🌐 Checked Gmail UI Languages
+
+Reply action detection has been checked with the following Gmail display languages:
+
+* English (US) (English US)
+* English (UK) (English UK)
+* 日本語 (Japanese)
+* Deutsch (German)
+* Español (Spanish)
+* Español (Latinoamérica) (Spanish Latin America)
+* Français (French)
+* Français (Canada) (French Canada)
+* Português (Brasil) (Portuguese Brazil)
+* Português (Portugal) (Portuguese Portugal)
+* Italiano (Italian)
+* Nederlands (Dutch)
+* Polski (Polish)
+* Türkçe (Turkish)
+* Bahasa Indonesia (Indonesian)
+* Tiếng Việt (Vietnamese)
+* Русский (Russian)
+* Українська (Ukrainian)
+* 中文 (简体) (Chinese Simplified)
+* 中文 (繁體) (Chinese Traditional)
+* 中文 (香港) (Chinese Hong Kong)
+* 한국어 (Korean)
+* ภาษาไทย (Thai)
+* हिन्दी (Hindi)
+* العربية (Arabic)
+
+Other Gmail display languages may also work when Gmail uses the same reply button structure, but they have not been manually checked.
+
+---
+
 ## 🎯 Target Site
 
 SmartRe for Gmail intentionally requests access only to:
@@ -94,6 +128,7 @@ After changing source files, reload the extension on `chrome://extensions`, then
 
 | Version | Date       | Notes |
 | ------- | ---------- | ----- |
+| 1.4.0   | 2026-07-18 | Expanded Gmail UI language support for reply action detection |
 | 1.3.0   | 2026-07-17 | Improved original header detection and added Cc support |
 | 1.2.1   | 2026-06-03 | Improved reply draft detection for signatures and Google Workspace accounts |
 | 1.2.0   | 2026-04-29 | Added editable reply header templates |

@@ -32,23 +32,68 @@ const TEMPLATE_VARIABLE_PATTERN = /\$(fromName|fromEmail|from|toName|toEmail|to|
 const CC_TEMPLATE_VARIABLE_PATTERN = /\$(ccName|ccEmail|cc)(?![A-Za-z0-9_])/;
 const TO_HEADER_TEMPLATE_LINE_PATTERN = /^\s*(to|宛先)\s*(?:[:：]|\s)\s*.*\$(toName|toEmail|to)(?![A-Za-z0-9_])/i;
 const CC_HEADER_TEMPLATE_LINE_PATTERN = /^\s*cc\s*(?:[:：]|\s)/i;
+const REPLY_ACTION_TEXT_PATTERN = /\breply\b|\bantworten\b|\bresponder\b|répondre|rispondi|beantwoorden|odpowiedz|yanıtla|yanitla|balas|trả lời|tra loi|ответить|відповісти|odpovědět|odpovedet|odpovedať|odpovedat|返信|回复|回覆|답장|ตอบ|जवाब दें|उत्तर दें|رد/i;
+const FORWARD_ACTION_TEXT_PATTERN = /\bforward\b|\breenviar\b|weiterleit|transférer|transferer|encaminhar|inoltra|doorsturen|prześlij|przeslij|przekaż|przekaz|yönlendir|yonlendir|ilet|teruskan|chuyển tiếp|chuyen tiep|переслать|переслати|ส่งต่อ|अग्रेषित|फ़ॉरवर्ड|फॉरवर्ड|फ़ॉरवर्ड|إعادة توجيه|転送|转发|轉發|转寄|轉寄|전달/i;
+const NON_REPLY_ACTION_TEXT_PATTERN = /suggested|suggestion|vorgeschlagene|sugerid[ao]s?|suggér|suggerit|sugerowana|voorgesteld|önerilen|onerilen|disarankan|đề xuất|de xuat|gợi ý|goi y|рекоменд|предлож|запропон|แนะนำ|सुझाया|مقترح|候補|おすすめ|建议|建議|추천|제안/i;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig;
 const MAILBOX_PATTERN = /(?:"?([^"<,;]+?)"?\s*)?<([^<>@\s]+@[^<>\s]+)>/ig;
+const DETAIL_HEADER_LABELS = {
+  from: new Set([
+    "from", "差出人", "von", "de", "àpartirde", "da", "van", "od", "gönderen",
+    "dari", "từ", "от", "від", "发件人", "寄件者", "보낸사람", "จาก", "से", "من"
+  ]),
+  replyTo: new Set([
+    "replyto", "返信先", "antwortan", "respondera", "répondreà", "rispondia",
+    "antwoordenop", "odpowiedzdo", "yanıt", "balaske", "trảlời", "ответить",
+    "відповісти", "回复", "回覆至", "回覆", "답장", "ตอบกลับถึง", "जवाबदें", "ردعلى"
+  ]),
+  to: new Set([
+    "to", "宛先", "an", "para", "à", "a", "aan", "do", "alıcı", "kepada",
+    "tới", "кому", "收件人", "收件者", "받는사람", "ถึง", "इन्हेंभेजें", "إلى"
+  ]),
+  cc: new Set(["cc"]),
+  date: new Set([
+    "date", "日付", "datum", "fecha", "data", "ngày", "дата", "日期",
+    "날짜", "วันที่", "तारीख", "التاريخ"
+  ]),
+  subject: new Set([
+    "subject", "件名", "betreff", "asunto", "objet", "assunto", "oggetto",
+    "onderwerp", "temat", "konu", "subjek", "tiêuđề", "тема", "主题",
+    "主旨", "제목", "เรื่อง", "विषय", "الموضوع"
+  ])
+};
 
 const TIMEOUT_SEC = 5;
 const TRIM_CLICK_DELAY_MS = 700;
 const DEBUG = isDebugEnabled();
 const INITIALIZED_FLAG = "__smartreContentScriptInitialized";
+const ACTION_CANDIDATE_SELECTOR = [
+  "[role='button']",
+  "[role='menuitem']",
+  "[role='menuitemradio']",
+  "[role='menuitemcheckbox']",
+  "button",
+  "[aria-label]",
+  "[data-tooltip]",
+  "[title]",
+  ".J-N",
+  ".J-N-Jz",
+  ".pYTkkf-JX-I",
+  "span.ams"
+].join(", ");
 
 const SELECTORS = {
   // Gmail返信ボタン。英語UI/日本語UI/内部クラスの候補をまとめて監視する。
   replyButtons: [
     "div[data-tooltip='Reply']",
     "div[data-tooltip*='Reply']",
+    "div[data-tooltip*='Antwort']",
     "button[aria-label='Reply']",
     "button[aria-label*='Reply']",
+    "button[aria-label*='Antwort']",
     "div[aria-label='Reply']",
     "div[aria-label*='Reply']",
+    "div[aria-label*='Antwort']",
     "button[aria-label='返信']",
     "button[aria-label*='返信']",
     "div[data-tooltip*='返信']",
@@ -86,6 +131,9 @@ const SELECTORS = {
 
   // Gmail元メールヘッダの詳細表示ボタン。元メールのTo/Ccを正確に読む補助に使う。
   originalDetailButton: [
+    "td.ady div.ajy[role='button']",
+    "td.ady div.ajy[aria-haspopup='true']",
+    "div.ajy[role='button'][aria-haspopup='true']",
     "div.ajy[aria-label='Show details']",
     "div.ajy[aria-label='詳細を表示']",
     "div.ajy[data-tooltip='Show details']",
@@ -495,6 +543,15 @@ function uniqueMailboxes(mailboxes) {
   return unique;
 }
 
+function excludeMailboxesByEmail(mailboxes, excludedMailboxes) {
+  const excludedEmails = new Set((excludedMailboxes || [])
+    .map((mailbox) => (mailbox.email || "").trim().toLowerCase())
+    .filter(Boolean));
+
+  return uniqueMailboxes(mailboxes)
+    .filter((mailbox) => !excludedEmails.has(mailbox.email.toLowerCase()));
+}
+
 function createMailboxContext(mailboxes, source = "") {
   const unique = uniqueMailboxes(mailboxes);
 
@@ -568,35 +625,43 @@ function collectMailboxesFromNode(node) {
 
 function normalizeHeaderLabel(text) {
   return (text || "")
+    .replace(/[\u200e\u200f\u202a-\u202e]/g, "")
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, "")
     .replace(/[：:]+$/u, "")
     .toLowerCase();
 }
 
-function isToHeaderLabel(text) {
+function isDetailHeaderLabel(type, text) {
   const label = normalizeHeaderLabel(text);
-  return label === "to" || label === "宛先";
+  const normalizedLabel = label.replace(/[-_]/g, "");
+
+  return DETAIL_HEADER_LABELS[type].has(label) ||
+    DETAIL_HEADER_LABELS[type].has(normalizedLabel);
+}
+
+function isToHeaderLabel(text) {
+  return isDetailHeaderLabel("to", text);
 }
 
 function isCcHeaderLabel(text) {
-  const label = normalizeHeaderLabel(text);
-  return label === "cc";
+  return isDetailHeaderLabel("cc", text);
+}
+
+function isReplyToHeaderLabel(text) {
+  return isDetailHeaderLabel("replyTo", text);
 }
 
 function isFromHeaderLabel(text) {
-  const label = normalizeHeaderLabel(text);
-  return label === "from" || label === "差出人";
+  return isDetailHeaderLabel("from", text);
 }
 
 function isDateHeaderLabel(text) {
-  const label = normalizeHeaderLabel(text);
-  return label === "date" || label === "日付";
+  return isDetailHeaderLabel("date", text);
 }
 
 function isSubjectHeaderLabel(text) {
-  const label = normalizeHeaderLabel(text);
-  return label === "subject" || label === "件名";
+  return isDetailHeaderLabel("subject", text);
 }
 
 function getOriginalMessageRoot(composeRoot) {
@@ -655,6 +720,79 @@ function getDetailCell(row) {
   return row.querySelector("td.gL") || row.querySelector("td:last-child") || row;
 }
 
+function getOriginalDetailRows(table) {
+  return Array.from(table.querySelectorAll("tr"))
+    .map((row, index) => {
+      const cell = getDetailCell(row);
+      return {
+        row,
+        index,
+        label: row.querySelector("th")?.textContent || "",
+        cell,
+        mailboxes: collectMailboxesFromNode(cell),
+        text: normalizeHeaderText(cell.textContent || "")
+      };
+    })
+    .filter((detailRow) => detailRow.text || detailRow.mailboxes.length > 0);
+}
+
+function isLikelyDetailDateText(text) {
+  const normalized = normalizeHeaderText(text);
+  return /\d{1,2}:\d{2}/.test(normalized) &&
+    (/(\d{4}|年|\/|-|\.|,)/.test(normalized) || /\b(?:am|pm)\b/i.test(normalized));
+}
+
+function applyOriginalDetailOrderFallback(detail, detailRows) {
+  const mailboxRows = detailRows.filter((detailRow) => detailRow.mailboxes.length > 0);
+  const firstMailboxRow = mailboxRows[0] || null;
+  const hadExplicitTo = detail.to.mailboxes.length > 0;
+
+  if (!detail.from.mailboxes.length && firstMailboxRow) {
+    detail.from = createMailboxContext(firstMailboxRow.mailboxes, "detailFrom");
+  }
+
+  const firstMailboxIndex = firstMailboxRow?.index ?? -1;
+  const recipientRows = mailboxRows
+    .filter((detailRow) => (
+      detailRow.index > firstMailboxIndex &&
+      !isReplyToHeaderLabel(detailRow.label)
+    ))
+    .map((detailRow) => ({
+      ...detailRow,
+      mailboxes: excludeMailboxesByEmail(detailRow.mailboxes, detail.from.mailboxes)
+    }))
+    .filter((detailRow) => detailRow.mailboxes.length > 0);
+
+  if (!detail.to.mailboxes.length && recipientRows[0]) {
+    detail.to = createMailboxContext(recipientRows[0].mailboxes, "detailTo");
+  }
+
+  if (!detail.cc.mailboxes.length && !hadExplicitTo && recipientRows[1]) {
+    detail.cc = createMailboxContext(
+      excludeMailboxesByEmail(recipientRows[1].mailboxes, detail.to.mailboxes),
+      "detailCc"
+    );
+  }
+
+  const lastRecipientIndex = recipientRows.length > 0
+    ? recipientRows[recipientRows.length - 1].index
+    : firstMailboxIndex;
+  const rowsAfterRecipients = detailRows.filter((detailRow) => (
+    detailRow.index > lastRecipientIndex && detailRow.mailboxes.length === 0
+  ));
+  const inferredDateRow = rowsAfterRecipients.find((detailRow) => isLikelyDetailDateText(detailRow.text));
+
+  if (!detail.date && inferredDateRow) {
+    detail.date = inferredDateRow.text;
+  }
+
+  if (!detail.subject && inferredDateRow) {
+    detail.subject = rowsAfterRecipients.find((detailRow) => (
+      detailRow.index > inferredDateRow.index && detailRow.text && !isLikelyDetailDateText(detailRow.text)
+    ))?.text || "";
+  }
+}
+
 function parseOriginalDetailTable(table) {
   if (!(table instanceof Element)) {
     return null;
@@ -668,22 +806,23 @@ function parseOriginalDetailTable(table) {
     subject: ""
   };
 
-  table.querySelectorAll("tr").forEach((row) => {
-    const label = row.querySelector("th")?.textContent || "";
-    const cell = getDetailCell(row);
+  const detailRows = getOriginalDetailRows(table);
 
-    if (isFromHeaderLabel(label)) {
-      detail.from = createMailboxContext(collectMailboxesFromNode(cell), "detailFrom");
-    } else if (isToHeaderLabel(label)) {
-      detail.to = createMailboxContext(collectMailboxesFromNode(cell), "detailTo");
-    } else if (isCcHeaderLabel(label)) {
-      detail.cc = createMailboxContext(collectMailboxesFromNode(cell), "detailCc");
-    } else if (isDateHeaderLabel(label)) {
-      detail.date = normalizeHeaderText(cell.textContent || "");
-    } else if (isSubjectHeaderLabel(label)) {
-      detail.subject = normalizeHeaderText(cell.textContent || "");
+  detailRows.forEach((detailRow) => {
+    if (isFromHeaderLabel(detailRow.label) && detailRow.mailboxes.length > 0) {
+      detail.from = createMailboxContext(detailRow.mailboxes, "detailFrom");
+    } else if (isToHeaderLabel(detailRow.label) && detailRow.mailboxes.length > 0) {
+      detail.to = createMailboxContext(detailRow.mailboxes, "detailTo");
+    } else if (isCcHeaderLabel(detailRow.label) && detailRow.mailboxes.length > 0) {
+      detail.cc = createMailboxContext(detailRow.mailboxes, "detailCc");
+    } else if (isDateHeaderLabel(detailRow.label)) {
+      detail.date = detailRow.text;
+    } else if (isSubjectHeaderLabel(detailRow.label)) {
+      detail.subject = detailRow.text;
     }
   });
+
+  applyOriginalDetailOrderFallback(detail, detailRows);
 
   if (!detail.from.mailboxes.length && !detail.to.mailboxes.length && !detail.date && !detail.subject) {
     return null;
@@ -1290,11 +1429,11 @@ function parseGmailHeader(headerText) {
 
   const dateAndName = beforeEmail.match(/^(.+\d{1,2}:\d{2}(?:\s*(?:AM|PM))?)\s+(.+)$/i);
   const dateOnly = beforeEmail.match(/^(.+\d{1,2}:\d{2}(?:\s*(?:AM|PM))?)$/i);
-  if (dateAndName) {
+  if (dateOnly) {
+    date = dateOnly[1].trim();
+  } else if (dateAndName) {
     date = dateAndName[1].trim();
     senderName = dateAndName[2].trim();
-  } else if (dateOnly) {
-    date = dateOnly[1].trim();
   } else if (email) {
     senderName = beforeEmail.trim();
   }
@@ -1434,9 +1573,13 @@ function buildTemplateVariables(parsed, context) {
   const toMailbox = hasOriginalDetail
     ? originalDetail.to || createMailboxContext([], "detailTo")
     : selectTemplateToMailbox(parsed, context);
-  const ccMailbox = hasOriginalDetail
+  const rawCcMailbox = hasOriginalDetail
     ? originalDetail.cc || createMailboxContext([], "detailCc")
     : selectTemplateCcMailbox(parsed, context);
+  const ccMailbox = createMailboxContext(
+    excludeMailboxesByEmail(rawCcMailbox.mailboxes, toMailbox.mailboxes),
+    rawCcMailbox.source
+  );
 
   return {
     from: formatMailbox(fromMailbox.name, fromMailbox.email),
@@ -1591,7 +1734,7 @@ function findPlainTextReplyHeader(lines) {
 }
 
 function isPlausibleReplyHeader(parsed) {
-  return Boolean(parsed?.date && (parsed.senderName || parsed.email));
+  return Boolean(parsed?.email || (parsed?.date && parsed.senderName));
 }
 
 function hasPlainTextQuoteAfterHeader(lines, headerIndex) {
@@ -1742,16 +1885,47 @@ function getElementActionText(element) {
     return "";
   }
 
-  return [
-    element.getAttribute("aria-label") || "",
-    element.getAttribute("data-tooltip") || "",
-    element.textContent || ""
-  ].join(" ").trim();
+  const parts = [];
+  let current = element;
+
+  for (let depth = 0; current instanceof Element && depth < 4; depth += 1) {
+    parts.push(
+      current.getAttribute("aria-label") || "",
+      current.getAttribute("data-tooltip") || "",
+      current.getAttribute("title") || ""
+    );
+    if (depth === 0) {
+      parts.push(current.textContent || "");
+    }
+    current = current.parentElement;
+  }
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function isReplyActionText(text) {
+  return REPLY_ACTION_TEXT_PATTERN.test(text) &&
+    !FORWARD_ACTION_TEXT_PATTERN.test(text) &&
+    !NON_REPLY_ACTION_TEXT_PATTERN.test(text);
+}
+
+function isReplyActionElement(element) {
+  const actionElement = element instanceof Element
+    ? element.closest(ACTION_CANDIDATE_SELECTOR)
+    : null;
+
+  if (!actionElement) {
+    return null;
+  }
+
+  return isReplyActionText(getElementActionText(actionElement))
+    ? { selector: "reply action text", element: actionElement }
+    : null;
 }
 
 function isReplyMenuItem(element) {
   const menuItem = element instanceof Element
-    ? element.closest("[role='menuitem'], .J-N")
+    ? element.closest("[role='menuitem'], [role='menuitemradio'], [role='menuitemcheckbox'], .J-N, .J-N-Jz")
     : null;
 
   if (!menuItem) {
@@ -1759,7 +1933,7 @@ function isReplyMenuItem(element) {
   }
 
   const actionText = getElementActionText(menuItem);
-  const isReplyAction = /reply|返信/i.test(actionText) && !/forward|転送/i.test(actionText);
+  const isReplyAction = isReplyActionText(actionText);
 
   return isReplyAction
     ? { selector: "reply menu item", element: menuItem }
@@ -1769,7 +1943,7 @@ function isReplyMenuItem(element) {
 function describeClickTarget(target) {
   if (!(target instanceof Element)) return {};
 
-  const closestButton = target.closest("[role='menuitem'], [role='button'], button[data-tooltip], button[aria-label], div[data-tooltip], div[aria-label], span.ams");
+  const closestButton = target.closest(ACTION_CANDIDATE_SELECTOR);
 
   return {
     tagName: target.tagName,
@@ -1778,12 +1952,14 @@ function describeClickTarget(target) {
     closestTagName: closestButton?.tagName || "",
     closestClassName: closestButton?.className || "",
     closestAriaLabel: closestButton?.getAttribute("aria-label") || "",
-    closestTooltip: closestButton?.getAttribute("data-tooltip") || ""
+    closestTooltip: closestButton?.getAttribute("data-tooltip") || "",
+    closestTitle: closestButton?.getAttribute("title") || ""
   };
 }
 
 function handleDocumentClick(event) {
   const matchedReply = matchesAnySelector(event.target, SELECTORS.replyButtons) ||
+    isReplyActionElement(event.target) ||
     isReplyMenuItem(event.target);
   if (!matchedReply) {
     return;
